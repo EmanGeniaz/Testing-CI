@@ -1,0 +1,52 @@
+# Render Blueprint for the Consumer Intelligence Agent backend.
+# Render will pick this up on connecting the repo and auto-create the service.
+#
+# After the service is created:
+#   1. In the Render dashboard for this service, add your LLM API keys
+#      under Environment > Environment Variables:
+#        ANTHROPIC_API_KEY   (required for default Claude model)
+#        OPENAI_API_KEY      (optional)
+#        GROQ_API_KEY        (optional)
+#        GOOGLE_API_KEY      (optional)
+#   2. The frontend (Vercel) needs NEXT_PUBLIC_API_URL set to the URL
+#      Render assigns this service (e.g. https://ci-agent-backend.onrender.com).
+#   3. TEST_ROW_LIMIT defaults to 20 here — raise once SMEs are happy with output.
+
+services:
+  - type: web
+    name: ci-agent-backend
+    runtime: python
+    region: oregon
+    plan: starter            # $7/mo, always-on. Use 'free' for sleeping test instances.
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: TEST_ROW_LIMIT
+        value: "20"
+      - key: ANTHROPIC_MODEL
+        value: claude-opus-4-5
+      - key: BATCH_SIZE
+        value: "5"
+      - key: MAX_WORKERS
+        value: "3"
+      # DATA_DIR points at the persistent disk mount so runs survive deploys
+      - key: DATA_DIR
+        value: /var/data
+      # Secret keys must be filled in manually in the Render dashboard.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+    disk:
+      name: ci-agent-data
+      mountPath: /var/data
+      sizeGB: 1

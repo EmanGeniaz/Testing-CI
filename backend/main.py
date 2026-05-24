@@ -391,6 +391,15 @@ def _run_tagging_bg(session_id: str, provider: str, api_key: str,
         text_col   = schema_cfg["primary_text_column"]
         context    = session.get("dataset_context", {})
         raw_data   = session["raw_data"]
+
+        # TEST_ROW_LIMIT caps the number of rows tagged per run. Set to a small
+        # value (e.g. 20) on deployed/test environments to keep LLM costs bounded
+        # while SMEs review output. 0 disables the cap.
+        row_limit = int(os.getenv("TEST_ROW_LIMIT", "0"))
+        if row_limit > 0 and len(raw_data) > row_limit:
+            log.info(f"TEST_ROW_LIMIT={row_limit} → capping {len(raw_data)} rows to {row_limit}")
+            raw_data = raw_data[:row_limit]
+
         total      = len(raw_data)
 
         # Determine concurrency and rate limits based on provider (Free Tiers)
