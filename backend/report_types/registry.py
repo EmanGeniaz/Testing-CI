@@ -7,10 +7,14 @@ payloads and persisted to runs.json).
 
 from .base import ReportType
 from .explainable_ai_tagging import REPORT_TYPE as EXPLAINABLE_AI_TAGGING
+from .pharma_social_intelligence import REPORT_TYPE as PHARMA_SOCIAL_INTELLIGENCE
+from .genz_brand_tracker import REPORT_TYPE as GENZ_BRAND_TRACKER
 
 
 _REPORT_TYPES: dict[str, ReportType] = {
-    EXPLAINABLE_AI_TAGGING.id: EXPLAINABLE_AI_TAGGING,
+    EXPLAINABLE_AI_TAGGING.id:     EXPLAINABLE_AI_TAGGING,
+    PHARMA_SOCIAL_INTELLIGENCE.id: PHARMA_SOCIAL_INTELLIGENCE,
+    GENZ_BRAND_TRACKER.id:         GENZ_BRAND_TRACKER,
 }
 
 DEFAULT_REPORT_TYPE_ID = EXPLAINABLE_AI_TAGGING.id
