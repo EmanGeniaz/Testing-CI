@@ -20,6 +20,13 @@ from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_core.exceptions import OutputParserException
 
+from report_types import (
+    DEFAULT_REPORT_TYPE_ID,
+    ReportType,
+    get_report_type,
+    list_report_types,
+)
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  LOGGING
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -177,84 +184,6 @@ def update_session(session_id: str, payload: dict):
     save_db(db)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  PYDANTIC OUTPUT SCHEMA
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class XAIRationale(BaseModel):
-    text_evidence: str = Field(
-        description="EXACT verbatim quote(s) from the source text. Must be a direct copy-paste."
-    )
-    theme_reasoning: str = Field(
-        description="Step-by-step explanation of why this theme was chosen, referencing text_evidence."
-    )
-    sentiment_reasoning: str = Field(
-        description="Why this sentiment label was assigned — be nuanced (aspirational, cautionary, etc.)."
-    )
-    signal_reasoning: str = Field(
-        description="Why these signals were flagged — what PR risk or opportunity do they represent?"
-    )
-    confidence_reasoning: str = Field(
-        description="Why this confidence score was assigned. What ambiguity or clarity affected it?"
-    )
-
-class RowAnalysis(BaseModel):
-    brand: str = Field(description="The primary brand this text is focused on. Empty string if it's a general industry text.")
-    sub_brands: List[str] = Field(description="List of specific products, services, or sub-brands belonging to the primary brand. Do not list independent companies here.")
-    entities: List[str] = Field(description="List of all Named Entities: Companies, Organizations, People, and Locations mentioned in the text.")
-    theme: str = Field(description="Primary theme. One of: Brand Reputation, Crisis & Risk, Product/Service, Leadership & Governance, ESG & Sustainability, Financial Performance, Innovation & Technology, Competitive Landscape, Community & Culture, Regulatory & Legal, Customer Experience, Employee Relations")
-    sub_theme_1: str = Field(description="First sub-theme — more specific categorisation within primary theme")
-    sub_theme_2: str = Field(description="Second sub-theme or empty string if not applicable")
-    sub_theme_3: str = Field(description="Third sub-theme or empty string if not applicable")
-    sentiment: str = Field(description="Sentiment label: Positive / Negative / Neutral / Mixed")
-    sentiment_nuance: str = Field(description="Nuanced descriptor: Aspirational, Cautionary, Inflammatory, Celebratory, Investigative, Sceptical, Empathetic, Urgent, Satirical, Factual")
-    emotion: str = Field(description="Dominant emotion: Joy, Trust, Anticipation, Surprise, Fear, Anger, Disgust, Sadness, or Neutral")
-    driver: str = Field(description="The specific factor or actor driving the narrative (e.g. CEO statement, product recall, earnings miss)")
-    severity: int = Field(description="Reputational severity 1-10. 1=benign/positive, 5=moderate, 10=crisis. Positive content: 1-3.", ge=1, le=10)
-    signals: str = Field(description="Comma-separated PR signals. Options: Crisis Signal, Viral Potential, Influencer Mention, Regulatory Scrutiny, Competitive Threat, Brand Advocacy, Earned Media, Negative Earned Media, Executive Spotlight, Policy Impact, Consumer Backlash, ESG Alert, Misinformation Risk")
-    confidence: float = Field(description="Confidence 0.0-1.0. Short/ambiguous text → lower. Clear explicit statements → higher.", ge=0.0, le=1.0)
-    xai_rationale: XAIRationale = Field(description="Detailed XAI rationale proving every decision is grounded in source text")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  PR ANALYST SYSTEM PROMPT
-# ═══════════════════════════════════════════════════════════════════════════════
-
-PR_SYSTEM_PROMPT = """You are ARIA — Advanced Reputation Intelligence Analyst — a world-class PR and Media Intelligence specialist with 20 years of experience advising Fortune 500 brands, government bodies, and NGOs on reputation management.
-
-Analyse this media content (social post, article, review, press release) and produce a structured intelligence report.
-
-=== ANALYTICAL FRAMEWORK ===
-1. BRAND: Identify the primary brand this text is about (if any). If it's a general industry text, leave empty.
-2. SUB-BRANDS: List specific products, services, or sub-brands belonging to the primary brand. Do NOT list independent companies here.
-3. ENTITIES: Extract a list of ALL distinct Named Entities (Organizations, Companies, People, Locations). Ensure all companies mentioned are captured here.
-4. THEME: Map to ONE primary theme from the taxonomy.
-5. SUB-THEMES: Up to 3, each more specific than the parent. Do NOT repeat the parent.
-6. SENTIMENT: Assign polarity (Positive/Negative/Neutral/Mixed) AND nuance (Aspirational, Cautionary, etc.)
-7. EMOTION: The dominant emotion the AUTHOR projects — reveals media framing bias.
-8. SEVERITY (1-10 reputational impact):
-   1-2: Positive brand building · 3-4: Low risk · 5-6: Monitor · 7-8: Respond · 9-10: Crisis
-9. SIGNALS: Early-warning flags. Only flag signals CLEARLY evidenced in text.
-10. CONFIDENCE: Be calibrated. Short/ambiguous → <0.7. Clear detailed text → >0.85.
-
-=== ANTI-HALLUCINATION RULES ===
-- xai_rationale.text_evidence MUST be verbatim copy from the SOURCE TEXT. Never paraphrase.
-- Do NOT infer facts not present in the source text.
-- If ambiguous, lower the confidence score.
-- Never fabricate sub-themes, signals, or drivers not supported by quoted text.
-
-=== CONTEXT ===
-Brand Focus: {brand_focus}
-Dataset Type: {dataset_type}
-Additional Context: {additional_context}
-
-=== SOURCE TEXT ===
-{source_text}
-
-=== OUTPUT FORMAT ===
-{format_instructions}
-
-Produce ONLY the JSON object. No preamble. No text outside the JSON."""
-
-# ═══════════════════════════════════════════════════════════════════════════════
 #  LLM FACTORY  (falls back to .env if no key passed)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -384,18 +313,32 @@ def parse_upload(content: bytes, filename: str) -> pd.DataFrame:
 #  ROW ANALYSIS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def analyse_row(llm, parser, prompt_template, row_text: str, context: dict, row_idx: int) -> dict:
+def _error_row(message: str, error_label: str = "Error") -> dict:
+    """Minimal error sentinel — schema-agnostic. Aggregators / consumers should
+    treat any dict with error=True as a failed row regardless of report type."""
+    return {
+        "error": True,
+        "error_message": message,
+        "_status": error_label,
+    }
+
+
+def analyse_row(llm, parser, prompt_template, report_type: ReportType,
+                row_text: str, context: dict, row_idx: int) -> list[dict]:
+    """Run one LLM tagging call. Returns a list of parsed-output dicts (one or
+    more, depending on the report type's post_processor). Raw row merging is
+    done by the caller so we don't need access to the full input row here."""
     import time
     import random
     chain = prompt_template | llm | parser
-    log.info(f"  Analysing row {row_idx}: {row_text[:80]}…")
-    
+    log.info(f"  Analysing row {row_idx} ({report_type.id}): {row_text[:80]}…")
+
     max_retries = 5
     base_delay = 5.0
-    
+
     for attempt in range(max_retries):
         try:
-            result: RowAnalysis = chain.invoke({
+            result = chain.invoke({
                 "brand_focus":        context.get("focus_brand", "Not specified"),
                 "dataset_type":       context.get("dataset_type", "Mixed / unknown"),
                 "additional_context": context.get("additional_context", "None provided"),
@@ -403,34 +346,11 @@ def analyse_row(llm, parser, prompt_template, row_text: str, context: dict, row_
                 "format_instructions": parser.get_format_instructions(),
             })
             data = result.model_dump()
-            xai  = data.pop("xai_rationale", {})
-            data["xai_text_evidence"]       = xai.get("text_evidence", "")
-            data["xai_theme_reasoning"]     = xai.get("theme_reasoning", "")
-            data["xai_sentiment_reasoning"] = xai.get("sentiment_reasoning", "")
-            data["xai_signal_reasoning"]    = xai.get("signal_reasoning", "")
-            data["xai_confidence_reasoning"]= xai.get("confidence_reasoning", "")
-            log.info(f"  Row {row_idx} → theme={data.get('theme')} sentiment={data.get('sentiment')} confidence={data.get('confidence')}")
-            return data
+            log.info(f"  Row {row_idx} parsed OK")
+            return [data]
         except OutputParserException as e:
             log.error(f"  Row {row_idx} parse error: {e}")
-            raw = str(e)
-            try:
-                match = re.search(r'\{.*\}', raw, re.DOTALL)
-                if match:
-                    parsed = json.loads(match.group())
-                    out = {k: parsed.get(k, "") for k in ["brand", "theme","sub_theme_1","sub_theme_2","sub_theme_3",
-                            "sentiment","sentiment_nuance","emotion","driver","signals"]}
-                    out["sub_brands"] = parsed.get("sub_brands", [])
-                    out["entities"] = parsed.get("entities", [])
-                    out.update({"severity": int(parsed.get("severity",5)), "confidence": float(parsed.get("confidence",0.0)),
-                                 "xai_text_evidence": "⚠ Parse fallback — partial extraction", "error": True})
-                    return out
-            except Exception:
-                pass
-            return {"brand":"", "sub_brands":[], "entities":[], "theme":"Parse Error","sub_theme_1":"","sub_theme_2":"","sub_theme_3":"",
-                    "sentiment":"Unknown","sentiment_nuance":"","emotion":"","driver":"",
-                    "severity":5,"signals":"","confidence":0.0,
-                    "xai_text_evidence":f"⚠ Error: {str(e)[:300]}","error":True}
+            return [_error_row(f"⚠ Parse error: {str(e)[:300]}", "Parse Error")]
         except Exception as e:
             err_str = str(e).lower()
             if "429" in err_str or "rate limit" in err_str or "quota" in err_str or "resource exhausted" in err_str:
@@ -439,12 +359,8 @@ def analyse_row(llm, parser, prompt_template, row_text: str, context: dict, row_
                     log.warning(f"  Row {row_idx} hit rate limit. Retrying in {sleep_time:.1f}s (Attempt {attempt+1}/{max_retries})")
                     time.sleep(sleep_time)
                     continue
-            
             log.error(f"  Row {row_idx} unexpected error: {e}")
-            return {"brand":"", "sub_brands":[], "entities":[], "theme":"Error","sub_theme_1":"","sub_theme_2":"","sub_theme_3":"",
-                    "sentiment":"Unknown","sentiment_nuance":"","emotion":"","driver":"",
-                    "severity":5,"signals":"","confidence":0.0,
-                    "xai_text_evidence":f"⚠ Unexpected error: {str(e)[:300]}","error":True}
+            return [_error_row(f"⚠ Unexpected error: {str(e)[:300]}", "Error")]
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  BATCH PROCESSING ENGINE
@@ -456,16 +372,18 @@ BATCH_SIZE  = int(os.getenv("BATCH_SIZE",  "5"))   # rows per concurrent batch
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))   # parallel threads per batch
 
 def _run_tagging_bg(session_id: str, provider: str, api_key: str,
-                    model: Optional[str], session: dict, run_id: str):
+                    model: Optional[str], session: dict, run_id: str,
+                    report_type_id: str):
     start_time = datetime.utcnow()
-    log.info(f"=== RUN {run_id} START | session={session_id} provider={provider} model={model} ===")
+    log.info(f"=== RUN {run_id} START | session={session_id} provider={provider} model={model} report_type={report_type_id} ===")
 
     try:
+        report_type = get_report_type(report_type_id)
         llm    = get_llm(provider, api_key, model)
-        parser = PydanticOutputParser(pydantic_object=RowAnalysis)
+        parser = PydanticOutputParser(pydantic_object=report_type.schema)
         prompt = PromptTemplate(
-            template=PR_SYSTEM_PROMPT,
-            input_variables=["brand_focus","dataset_type","additional_context","source_text"],
+            template=report_type.system_prompt,
+            input_variables=report_type.prompt_variables,
             partial_variables={"format_instructions": parser.get_format_instructions()},
         )
 
@@ -490,17 +408,20 @@ def _run_tagging_bg(session_id: str, provider: str, api_key: str,
 
         log.info(f"Run {run_id}: {total} rows, text_col='{text_col}', batch_size={BATCH_SIZE}, workers={workers}")
 
-        analyzed: List[dict] = [None] * total  # pre-allocate to preserve order
+        # analyzed[i] is a list of output rows (1 or more) produced from input row i.
+        # Most report types are 1:1 so lists have length 1; multi-finding report types
+        # (Pharma SI) can return N rows from one input.
+        analyzed: List[Optional[list]] = [None] * total
 
         def process_row(args):
             idx, row = args
-            
+
             if delay_between_requests > 0:
                 import time
                 time.sleep(delay_between_requests)
-                
+
             row_text = str(row.get(text_col, "")).strip()
-            
+
             ai_cols = schema_cfg.get("ai_columns", [])
             other_cols_text = []
             for col in ai_cols:
@@ -508,19 +429,33 @@ def _run_tagging_bg(session_id: str, provider: str, api_key: str,
                     val = str(row[col]).strip()
                     if val and val != "None":
                         other_cols_text.append(f"{col}: {val}")
-            
+
             if other_cols_text:
                 extra_text = "\n".join(other_cols_text)
                 if row_text:
                     row_text = f"{row_text}\n\n[Additional Context from other columns]\n{extra_text}"
                 else:
                     row_text = f"[Additional Context from other columns]\n{extra_text}"
-                    
+
             if not row_text:
                 row_text = " | ".join(str(v) for v in row.values() if v)
-                
-            ai_result = analyse_row(llm, parser, prompt, row_text, context, idx)
-            return idx, {**row, **ai_result}
+
+            parsed_list = analyse_row(llm, parser, prompt, report_type,
+                                      row_text, context, idx)
+            output_rows: list[dict] = []
+            for parsed in parsed_list:
+                if parsed.get("error"):
+                    output_rows.append({**row, **parsed})
+                else:
+                    output_rows.extend(report_type.post_processor(row, parsed))
+            return idx, output_rows
+
+        def _flatten(analyzed_list):
+            out = []
+            for entry in analyzed_list:
+                if entry:
+                    out.extend(entry)
+            return out
 
         # Process in batches to control concurrency
         completed = 0
@@ -532,13 +467,13 @@ def _run_tagging_bg(session_id: str, provider: str, api_key: str,
                 futures = {ex.submit(process_row, item): item[0] for item in batch_rows}
                 for fut in concurrent.futures.as_completed(futures):
                     try:
-                        idx, merged = fut.result()
-                        analyzed[idx] = merged
+                        idx, output_rows = fut.result()
+                        analyzed[idx] = output_rows
                         completed += 1
                         progress = int(completed / total * 100)
                         # Save every row incrementally so frontend sees live updates
                         update_session(session_id, {
-                            "analyzed_data": [r for r in analyzed if r is not None],
+                            "analyzed_data": _flatten(analyzed),
                             "progress": progress,
                             "status": "running",
                         })
@@ -546,12 +481,15 @@ def _run_tagging_bg(session_id: str, provider: str, api_key: str,
                     except Exception as e:
                         orig_idx = futures[fut]
                         log.error(f"Run {run_id}: row {orig_idx} worker exception: {e}")
-                        analyzed[orig_idx] = {**raw_data[orig_idx],
-                            "theme":"Worker Error","sentiment":"Unknown","confidence":0.0,
-                            "xai_text_evidence":f"⚠ Worker error: {str(e)[:200]}","error":True}
+                        analyzed[orig_idx] = [{
+                            **raw_data[orig_idx],
+                            "error": True,
+                            "error_message": f"⚠ Worker error: {str(e)[:200]}",
+                            "_status": "Worker Error",
+                        }]
 
         elapsed = (datetime.utcnow() - start_time).total_seconds()
-        final_data = [r for r in analyzed if r is not None]
+        final_data = _flatten(analyzed)
 
         update_session(session_id, {
             "analyzed_data": final_data,
@@ -568,8 +506,10 @@ def _run_tagging_bg(session_id: str, provider: str, api_key: str,
             "filename":    session.get("filename", ""),
             "provider":    provider,
             "model":       model or "default",
+            "report_type": report_type_id,
             "total_rows":  total,
             "completed":   completed,
+            "output_rows": len(final_data),
             "elapsed_sec": round(elapsed, 1),
             "status":      "complete",
             "started_at":  session.get("created_at", ""),
@@ -592,7 +532,9 @@ def _run_tagging_bg(session_id: str, provider: str, api_key: str,
         err_meta = {
             "run_id": run_id, "session_id": session_id,
             "filename": session.get("filename", ""), "provider": provider,
-            "model": model or "default", "status": "error",
+            "model": model or "default",
+            "report_type": report_type_id,
+            "status": "error",
             "error": str(e), "started_at": session.get("created_at", ""),
             "completed_at": datetime.utcnow().isoformat(),
             "columns": session.get("columns", []),
@@ -689,6 +631,7 @@ class RunTaggingPayload(BaseModel):
     provider: str
     api_key: str = ""   # optional — falls back to .env
     model: Optional[str] = None
+    report_type: str = DEFAULT_REPORT_TYPE_ID
 
 @app.post("/run-tagging")
 def run_tagging(payload: RunTaggingPayload, background_tasks: BackgroundTasks):
@@ -696,17 +639,31 @@ def run_tagging(payload: RunTaggingPayload, background_tasks: BackgroundTasks):
     if not session.get("schema_config", {}).get("primary_text_column"):
         raise HTTPException(status_code=400, detail="Schema not configured — set primary_text_column first")
 
+    try:
+        get_report_type(payload.report_type)
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
     run_id = str(uuid.uuid4())[:8]
-    log.info(f"Starting run {run_id} for session {payload.session_id}")
+    log.info(f"Starting run {run_id} for session {payload.session_id} report_type={payload.report_type}")
     update_session(payload.session_id, {
-        "status": "running", "analyzed_data": [], "progress": 0, "run_id": run_id
+        "status": "running", "analyzed_data": [], "progress": 0,
+        "run_id": run_id, "report_type": payload.report_type,
     })
     background_tasks.add_task(
         _run_tagging_bg,
         payload.session_id, payload.provider, payload.api_key,
-        payload.model, session, run_id,
+        payload.model, session, run_id, payload.report_type,
     )
     return {"ok": True, "run_id": run_id, "message": "Tagging started"}
+
+
+# ── Report types ───────────────────────────────────────────────────────────────
+
+@app.get("/report-types")
+def get_report_types():
+    return {"report_types": list_report_types(),
+            "default": DEFAULT_REPORT_TYPE_ID}
 
 
 # ── Status / Results ───────────────────────────────────────────────────────────

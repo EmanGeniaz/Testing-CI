@@ -70,12 +70,23 @@ export async function runTagging(payload: {
   provider: string;
   api_key?: string;
   model?: string;
+  report_type?: string;
 }) {
   return apiFetch(`${BASE}/run-tagging`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ api_key: "", ...payload }),
   });
+}
+
+export interface ReportTypeInfo {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export async function getReportTypes(): Promise<{ report_types: ReportTypeInfo[]; default: string }> {
+  return apiFetch(`${BASE}/report-types`);
 }
 
 export async function getStatus(session_id: string) {

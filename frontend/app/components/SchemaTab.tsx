@@ -1,6 +1,6 @@
 "use client";
-import { useState } from "react";
-import { setSchema, runTagging } from "../lib/api";
+import { useEffect, useState } from "react";
+import { setSchema, runTagging, getReportTypes, type ReportTypeInfo } from "../lib/api";
 
 interface SchemaTabProps {
   sessionId: string;
@@ -59,6 +59,18 @@ export default function SchemaTab({ sessionId, columns, rowCount, onComplete }: 
   const [loading,  setLoading]    = useState(false);
   const [error,    setError]      = useState("");
 
+  const [reportTypes, setReportTypes] = useState<ReportTypeInfo[]>([]);
+  const [reportType,  setReportType]  = useState("");
+
+  useEffect(() => {
+    getReportTypes()
+      .then(res => {
+        setReportTypes(res.report_types);
+        setReportType(res.default);
+      })
+      .catch(err => console.warn("Could not load report types", err));
+  }, []);
+
   const selectedProvider = PROVIDERS.find(p => p.id === provider)!;
   const visibleCount = columns.filter(c => colConfig[c]?.show).length;
   const aiCount      = columns.filter(c => colConfig[c]?.useForAI === "Yes").length;
@@ -82,7 +94,12 @@ export default function SchemaTab({ sessionId, columns, rowCount, onComplete }: 
       const visibleCols = columns.filter(c => colConfig[c]?.show);
       const aiCols      = columns.filter(c => colConfig[c]?.useForAI === "Yes");
       await setSchema({ session_id: sessionId, primary_text_column: primaryCol, visible_columns: visibleCols, ai_columns: aiCols });
-      await runTagging({ session_id: sessionId, provider, model: model || undefined });
+      await runTagging({
+        session_id: sessionId,
+        provider,
+        model: model || undefined,
+        report_type: reportType || undefined,
+      });
       onComplete();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to start tagging");
@@ -232,7 +249,21 @@ export default function SchemaTab({ sessionId, columns, rowCount, onComplete }: 
             API keys loaded from server .env
           </div>
         </div>
-        <div className="flex gap-3">
+        <div className="flex gap-3 flex-wrap">
+          <div className="min-w-[220px]">
+            <label className="text-[10px] text-[#9CA3AF] block mb-1">Report Type</label>
+            <select
+              value={reportType}
+              onChange={e => setReportType(e.target.value)}
+              disabled={reportTypes.length === 0}
+              className="w-full px-2.5 py-1.5 text-[12px] border border-[#E5E3DC] rounded-lg bg-white focus:outline-none focus:border-[#7C3AED] text-[#374151]"
+            >
+              {reportTypes.length === 0 && <option value="">Loading…</option>}
+              {reportTypes.map(rt => (
+                <option key={rt.id} value={rt.id}>{rt.name}</option>
+              ))}
+            </select>
+          </div>
           <div className="min-w-[160px]">
             <label className="text-[10px] text-[#9CA3AF] block mb-1">Provider</label>
             <select value={provider} onChange={e => { setProvider(e.target.value); setModel(""); }}
@@ -248,7 +279,7 @@ export default function SchemaTab({ sessionId, columns, rowCount, onComplete }: 
               {selectedProvider.models.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
           </div>
-          <div className="flex-1 flex items-end">
+          <div className="flex-1 flex items-end min-w-[200px]">
             <p className="text-[11px] text-[#9CA3AF] pb-1.5">
               Configure keys in <span className="font-mono bg-[#F3F2EE] px-1 rounded">backend/.env</span>
             </p>
