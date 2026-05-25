@@ -124,3 +124,11 @@ export async function updateRow(session_id: string, row_idx: number, col: string
     body: JSON.stringify({ col, value }),
   });
 }
+
+export async function refineReport(session_id: string, feedback: string, design_theme: string) {
+  return apiFetch(`${BASE}/session/${session_id}/refine-report`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ feedback, design_theme }),
+  });
+}
