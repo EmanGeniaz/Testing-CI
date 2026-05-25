@@ -918,6 +918,22 @@ def export_pptx_report(session_id: str):
             raw_content = response.content if hasattr(response, "content") else str(response)
             report_data = _parse_llm_report_json(raw_content)
 
+            # Retry if first attempt produced no findings
+            if not report_data.get("findings") and len(raw_content) > 100:
+                log.warning("PPTX export: first LLM call produced unparseable JSON, retrying")
+                retry_prompt = REPORT_GENERATION_RETRY_PROMPT.format(
+                    filename=session.get("filename", "Dataset"),
+                    report_type=report_type_id,
+                    brand_focus=context.get("focus_brand", "Not specified"),
+                    total_items=stats["total_rows"] - stats["error_rows"],
+                    tag_stats=stats_text,
+                )
+                retry_response = llm.invoke(retry_prompt)
+                retry_content = retry_response.content if hasattr(retry_response, "content") else str(retry_response)
+                retry_data = _parse_llm_report_json(retry_content)
+                if retry_data.get("findings"):
+                    report_data = retry_data
+
             # Ensure metadata
             if "metadata" not in report_data:
                 report_data["metadata"] = {}
@@ -1285,9 +1301,11 @@ Total Items Analyzed: {total_items}
 === SAMPLE TAGGED DATA (representative rows) ===
 {sample_data}
 
-=== INSTRUCTIONS ===
+=== OUTPUT FORMAT ===
 
-Produce a JSON report with exactly this structure:
+You MUST respond with ONLY a single raw JSON object. No markdown, no code fences, no ```json blocks, no explanation, no preamble, no trailing text. Your entire response must start with {{ and end with }}.
+
+The JSON object must have exactly these keys:
 
 {{
   "title": "<Dataset/Brand name> — <key finding headline>",
@@ -1330,7 +1348,31 @@ Produce a JSON report with exactly this structure:
 4. The "so_what" should be actionable, strategic, and specific to the data.
 5. Use **bold** for emphasis in section bodies and *italics* in finding claims.
 6. Ground everything in the actual statistics and data provided. Do NOT invent numbers.
-7. Return ONLY valid JSON. No preamble, no markdown fences, no text outside the JSON object.
+
+=== CRITICAL ===
+Your ENTIRE response must be ONLY the JSON object. Do NOT wrap it in markdown code fences. Do NOT include any text before or after the JSON. Start your response with {{ and end with }}.
+"""
+
+REPORT_GENERATION_RETRY_PROMPT = """Your previous response was not valid JSON. You MUST respond with ONLY a raw JSON object.
+
+DO NOT use markdown code fences (```).
+DO NOT include any text before or after the JSON.
+DO NOT add any explanation or commentary.
+
+Start your response with the opening brace {{ and end with the closing brace }}.
+
+Generate the report again as a single valid JSON object with these keys: "title", "subtitle", "sections", "findings", "evidence", "so_what".
+
+=== CONTEXT ===
+Dataset: {filename}
+Report Type: {report_type}
+Brand/Focus: {brand_focus}
+Total Items Analyzed: {total_items}
+
+=== TAG STATISTICS (abbreviated) ===
+{tag_stats}
+
+Respond with ONLY the JSON object starting with {{ now:
 """
 
 
@@ -1503,24 +1545,19 @@ def _build_sample_data(session: dict, analyzed_data: list[dict], max_samples: in
 
 def _parse_llm_report_json(raw_text: str) -> dict:
     """Extract and parse JSON from the LLM response, handling markdown fences
-    and other common LLM response quirks."""
+    and other common LLM response quirks. If all parsing fails, constructs a
+    minimal valid report from whatever text was returned."""
     text = raw_text.strip()
 
-    # Strip markdown code fences if present
-    if text.startswith("```"):
-        # Remove opening fence (with optional language tag)
-        text = re.sub(r"^```(?:json)?\s*\n?", "", text)
-        # Remove closing fence
-        text = re.sub(r"\n?```\s*$", "", text)
-        text = text.strip()
-
-    # Try direct parse
+    # ── Strategy 1: Strip markdown code fences (```json ... ```) ──────────
+    cleaned = re.sub(r"^```(?:json|JSON)?\s*\n?", "", text)
+    cleaned = re.sub(r"\n?```\s*$", "", cleaned).strip()
     try:
-        return json.loads(text)
+        return json.loads(cleaned)
     except json.JSONDecodeError:
         pass
 
-    # Try to find a JSON object in the text
+    # ── Strategy 2: Strip any text before first { and after last } ────────
     brace_start = text.find("{")
     brace_end = text.rfind("}")
     if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
@@ -1530,7 +1567,74 @@ def _parse_llm_report_json(raw_text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    raise ValueError(f"Could not parse LLM response as JSON. Raw response (first 500 chars): {raw_text[:500]}")
+        # ── Strategy 3: Fix common JSON issues (trailing commas, single quotes) ──
+        fixed = candidate
+        # Remove trailing commas before } or ]
+        fixed = re.sub(r",\s*([\]}])", r"\1", fixed)
+        # Replace single quotes with double quotes (risky but helpful)
+        # Only if there are no double quotes in values
+        if '"' not in fixed and "'" in fixed:
+            fixed = fixed.replace("'", '"')
+        try:
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+
+        # ── Strategy 4: Try to find complete JSON using brace matching ────
+        depth = 0
+        json_start = brace_start
+        for i in range(brace_start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    balanced = text[json_start:i + 1]
+                    try:
+                        return json.loads(balanced)
+                    except json.JSONDecodeError:
+                        # Try with trailing comma fix
+                        balanced_fixed = re.sub(r",\s*([\]}])", r"\1", balanced)
+                        try:
+                            return json.loads(balanced_fixed)
+                        except json.JSONDecodeError:
+                            pass
+                    break
+
+    # ── Strategy 5: Look for JSON in code fence blocks anywhere in text ───
+    fence_match = re.search(r"```(?:json|JSON)?\s*\n(\{.*?\})\s*\n?```", text, re.DOTALL)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # ── Strategy 6: Construct a minimal valid report from raw text ─────────
+    log.warning(f"All JSON parsing strategies failed. Constructing minimal report from raw text. "
+                f"First 300 chars: {raw_text[:300]}")
+
+    # Try to extract anything useful from the text
+    body_text = raw_text.strip()
+    # Remove any markdown fences
+    body_text = re.sub(r"```(?:json|JSON)?", "", body_text).strip()
+    # Limit length
+    if len(body_text) > 2000:
+        body_text = body_text[:2000] + "..."
+
+    return {
+        "title": "Analysis Report",
+        "subtitle": "Auto-generated from analysis data",
+        "sections": [
+            {
+                "id": "the-read",
+                "heading": "The read",
+                "body": body_text if body_text else "Report generation encountered a formatting issue. Please review the tagged data directly.",
+            }
+        ],
+        "findings": [],
+        "evidence": [],
+        "so_what": "Review the tagged data for detailed insights.",
+    }
 
 
 def _resolve_llm_for_report(session: dict, payload: GenerateReportPayload):
@@ -1639,13 +1743,52 @@ def generate_report(session_id: str, payload: GenerateReportPayload = None):
         response = llm.invoke(prompt_text)
         raw_content = response.content if hasattr(response, "content") else str(response)
         report = _parse_llm_report_json(raw_content)
+
+        # If _parse_llm_report_json returned a minimal fallback (no findings),
+        # and the raw text had content, try a retry with a stricter prompt
+        if not report.get("findings") and len(raw_content) > 100:
+            log.warning(f"First LLM call produced unparseable JSON for session {session_id}. Retrying with stricter prompt.")
+            retry_prompt = REPORT_GENERATION_RETRY_PROMPT.format(
+                filename=session.get("filename", "Dataset"),
+                report_type=report_type_id,
+                brand_focus=context.get("focus_brand", "Not specified"),
+                total_items=stats["total_rows"] - stats["error_rows"],
+                tag_stats=stats_text,
+            )
+            retry_response = llm.invoke(retry_prompt)
+            retry_content = retry_response.content if hasattr(retry_response, "content") else str(retry_response)
+            retry_report = _parse_llm_report_json(retry_content)
+            # Use the retry result only if it has actual findings
+            if retry_report.get("findings"):
+                report = retry_report
+                log.info(f"Retry succeeded for session {session_id}")
+            else:
+                log.warning(f"Retry also failed to produce findings for session {session_id}")
+
     except Exception as e:
         log.error(f"LLM report generation failed for session {session_id}: {e}\n{traceback.format_exc()}")
-        log.info("Falling back to statistical report")
-        report = _generate_fallback_report(session, analyzed_data)
-        report["metadata"]["method"] = "statistical_fallback_after_llm_error"
-        report["metadata"]["llm_error"] = str(e)[:300]
-        return report
+
+        # Retry once with stricter prompt
+        try:
+            log.info(f"Retrying report generation with stricter prompt for session {session_id}")
+            retry_prompt = REPORT_GENERATION_RETRY_PROMPT.format(
+                filename=session.get("filename", "Dataset"),
+                report_type=report_type_id,
+                brand_focus=context.get("focus_brand", "Not specified"),
+                total_items=stats["total_rows"] - stats["error_rows"],
+                tag_stats=stats_text,
+            )
+            retry_response = llm.invoke(retry_prompt)
+            retry_content = retry_response.content if hasattr(retry_response, "content") else str(retry_response)
+            report = _parse_llm_report_json(retry_content)
+            log.info(f"Retry succeeded for session {session_id}")
+        except Exception as retry_e:
+            log.error(f"Retry also failed for session {session_id}: {retry_e}")
+            log.info("Falling back to statistical report")
+            report = _generate_fallback_report(session, analyzed_data)
+            report["metadata"]["method"] = "statistical_fallback_after_llm_error"
+            report["metadata"]["llm_error"] = str(e)[:300]
+            return report
 
     # ── Validate and normalize the LLM response ──────────────────────────
     valid = stats["total_rows"] - stats["error_rows"]
