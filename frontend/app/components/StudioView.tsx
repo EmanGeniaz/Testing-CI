@@ -1119,9 +1119,25 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
               );
             })()}
 
-          <div className="flex gap-3">
-            <button onClick={onViewReport} className="btn-gradient">
-              <span>View in workbench</span>
+          <div className="flex gap-3 flex-wrap">
+            <a href={`${BASE}/session/${sessionId}/export/html-report`} target="_blank" rel="noopener noreferrer" className="btn-gradient">
+              <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14m0 0l-4-4m4 4l4-4M4 19h16" strokeLinecap="round" strokeLinejoin="round" /></svg>
+              <span>Export HTML Report</span>
+            </a>
+            <a href={`${BASE}/session/${sessionId}/export/pptx-report`} target="_blank" rel="noopener noreferrer"
+              className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-transparent text-ink-3 border border-rule hover:text-purple hover:border-purple-rule hover:bg-purple-soft transition-all inline-flex items-center gap-2">
+              Export PPTX
+            </a>
+            <a href={`${BASE}/session/${sessionId}/export/csv`} target="_blank" rel="noopener noreferrer"
+              className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-transparent text-ink-3 border border-rule hover:text-purple hover:border-purple-rule hover:bg-purple-soft transition-all inline-flex items-center gap-2">
+              Export CSV
+            </a>
+            <a href={`${BASE}/session/${sessionId}/export/xlsx`} target="_blank" rel="noopener noreferrer"
+              className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-transparent text-ink-3 border border-rule hover:text-purple hover:border-purple-rule hover:bg-purple-soft transition-all inline-flex items-center gap-2">
+              Export XLSX
+            </a>
+            <button onClick={onViewReport} className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-transparent text-ink-3 border border-rule hover:text-purple hover:border-purple-rule hover:bg-purple-soft transition-all">
+              View in workbench
             </button>
             <button onClick={() => setPhase("select-agent")} className="font-mono text-[11px] text-muted hover:text-ink uppercase tracking-[0.1em] px-5 py-2.5 border border-rule rounded-lg hover:border-purple-rule transition-all">
               New report
