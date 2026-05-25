@@ -31,15 +31,17 @@ from report_types import (
 #  LOGGING
 # ═══════════════════════════════════════════════════════════════════════════════
 
-LOG_PATH = Path(os.getenv("DATA_DIR", str(Path(__file__).parent))) / "app.log"
-LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+_log_handlers = [logging.StreamHandler()]
+try:
+    LOG_PATH = Path(os.getenv("DATA_DIR", str(Path(__file__).parent))) / "app.log"
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _log_handlers.append(logging.FileHandler(LOG_PATH, encoding="utf-8"))
+except OSError:
+    pass
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOG_PATH, encoding="utf-8"),
-    ],
+    handlers=_log_handlers,
 )
 log = logging.getLogger("e_ai")
 
