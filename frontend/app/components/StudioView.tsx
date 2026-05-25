@@ -185,28 +185,86 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
     const agentLabel = selectedAgent === "custom"
       ? "Custom Agent"
       : AGENTS.find(a => a.id === selectedAgent)?.name || selectedAgent || "";
-    addStep(`Initializing ${agentLabel} agent`, "ingest");
 
-    const additionalContext = [contextBrief, customAgentPrompt, prompt].filter(Boolean).join("\n\n");
+    const userPrompt = [
+      contextBrief,
+      customAgentPrompt,
+      prompt,
+      selectedAgent && selectedAgent !== "custom" ? `Use the ${agentLabel} skill.` : "",
+    ].filter(Boolean).join("\n\n");
+
+    onSessionReady(sessionId, file?.name || "dataset", columns, rowCount);
 
     try {
-      await setContext({ session_id: sessionId, dataset_type: "Single brand", focus_brand: "", additional_context: additionalContext });
-      addStep("Dataset context configured", "config");
+      const res = await fetch(`${BASE}/orchestrate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, prompt: userPrompt, provider }),
+      });
 
-      await setSchema({ session_id: sessionId, primary_text_column: primaryCol, visible_columns: columns, ai_columns: [primaryCol] });
-      addStep(`Schema mapped — primary text: ${primaryCol}`, "schema");
+      if (!res.ok || !res.body) {
+        throw new Error("Orchestrator unavailable");
+      }
 
-      const backendReportTypes = reportTypes.map(rt => rt.id);
-      const effectiveReportType = selectedAgent && selectedAgent !== "custom" && backendReportTypes.includes(selectedAgent)
-        ? selectedAgent : reportType;
-      await runTagging({ session_id: sessionId, provider, report_type: effectiveReportType });
-      addStep(`Tagging started — ${provider} / ${effectiveReportType}`, "agent");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-      onSessionReady(sessionId, file?.name || "dataset", columns, rowCount);
-      pollStatus(sessionId);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to start");
-      setPhase("select-agent");
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line);
+            if (event.type === "thinking") {
+              addStep(event.text, "reasoning");
+            } else if (event.type === "tool_call") {
+              addStep(`Calling ${event.tool}`, "tool");
+            } else if (event.type === "tool_result") {
+              const summary = typeof event.result === "string"
+                ? event.result.slice(0, 120)
+                : JSON.stringify(event.result).slice(0, 120);
+              addStep(`${event.tool} → ${summary}...`, "result");
+            } else if (event.type === "progress") {
+              setProgress(event.progress ?? 0);
+              setAnalyzedRows(event.analyzed_rows ?? 0);
+            } else if (event.type === "complete") {
+              if (event.report) setReport(event.report);
+              addStep(event.summary || "Agent complete", "done");
+              const results = await getResults(sessionId);
+              setTaggedData(results.analyzed_data ?? []);
+              setTimeout(() => setPhase("report"), 800);
+            } else if (event.type === "error") {
+              addStep(`Error: ${event.message || "Unknown"}`, "error");
+            }
+          } catch {
+            // skip malformed JSON lines
+          }
+        }
+      }
+    } catch {
+      // Fallback to the old hardcoded pipeline if orchestrator is unavailable
+      addStep(`Falling back to direct pipeline for ${agentLabel}`, "fallback");
+      try {
+        const additionalContext = [contextBrief, customAgentPrompt, prompt].filter(Boolean).join("\n\n");
+        await setContext({ session_id: sessionId, dataset_type: "Single brand", focus_brand: "", additional_context: additionalContext });
+        await setSchema({ session_id: sessionId, primary_text_column: primaryCol, visible_columns: columns, ai_columns: [primaryCol] });
+        const backendReportTypes = reportTypes.map(rt => rt.id);
+        const effectiveReportType = selectedAgent && selectedAgent !== "custom" && backendReportTypes.includes(selectedAgent)
+          ? selectedAgent : reportType;
+        await runTagging({ session_id: sessionId, provider, report_type: effectiveReportType });
+        addStep(`Tagging started — ${provider} / ${effectiveReportType}`, "agent");
+        pollStatus(sessionId);
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : "Failed to start");
+        setPhase("select-agent");
+      }
     }
   };
 

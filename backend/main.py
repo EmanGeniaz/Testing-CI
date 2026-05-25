@@ -1998,3 +1998,11 @@ def refine_report(session_id: str, payload: RefineReportPayload):
              f"{len(refined_report['sections'])} sections, {len(refined_report['findings'])} findings")
 
     return refined_report
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  AGENTIC ORCHESTRATOR ROUTER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from orchestrator_endpoint import router as orchestrator_router
+app.include_router(orchestrator_router)
