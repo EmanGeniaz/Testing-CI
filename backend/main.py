@@ -1283,97 +1283,65 @@ def _generate_fallback_report(session: dict, analyzed_data: list[dict]) -> dict:
     }
 
 
-REPORT_GENERATION_PROMPT = """You are a senior insights analyst. You have been given a dataset of tagged media/social intelligence data that has already been analyzed with themes, sentiments, signals, drivers, and supporting evidence.
+REPORT_GENERATION_PROMPT = """You are a senior insights analyst. Synthesize tagged media/social intelligence data into a structured executive report.
 
-Your task is to synthesize this data into a structured executive report.
+CONTEXT:
+- Dataset: {filename}
+- Report Type: {report_type}
+- Brand/Focus: {brand_focus}
+- Dataset Type: {dataset_type}
+- Additional Context: {additional_context}
+- Total Items Analyzed: {total_items}
 
-=== CONTEXT ===
-Dataset: {filename}
-Report Type: {report_type}
-Brand/Focus: {brand_focus}
-Dataset Type: {dataset_type}
-Additional Context: {additional_context}
-Total Items Analyzed: {total_items}
-
-=== TAG STATISTICS ===
+TAG STATISTICS:
 {tag_stats}
 
-=== SAMPLE TAGGED DATA (representative rows) ===
+SAMPLE TAGGED DATA (representative rows):
 {sample_data}
 
-=== OUTPUT FORMAT ===
+RESPONSE FORMAT RULES — READ CAREFULLY:
+1. Your response must be ONLY a JSON object.
+2. Do NOT wrap the JSON in markdown code fences (no ```json, no ```).
+3. Do NOT include ANY text before the opening {{ or after the closing }}.
+4. Do NOT include any explanation, preamble, commentary, or notes.
+5. The very first character of your response MUST be {{ and the very last character MUST be }}.
 
-You MUST respond with ONLY a single raw JSON object. No markdown, no code fences, no ```json blocks, no explanation, no preamble, no trailing text. Your entire response must start with {{ and end with }}.
+The JSON object must have exactly these keys: "title", "subtitle", "sections", "findings", "evidence", "so_what".
 
-The JSON object must have exactly these keys:
+Structure:
+- "title": string — "<Brand/Dataset> — <key finding headline>"
+- "subtitle": string — one sentence summary
+- "sections": array of 2-4 objects, each with "id" (string), "heading" (string), "body" (string). First section MUST have id="the-read" as executive summary. Use **bold** for key stats.
+- "findings": array of 3-5 objects, each with "number" (integer), "confidence" ("high"|"medium"|"low"), "claim" (string with *italics*), "support" (string with data citations)
+- "evidence": array of 3-10 objects, each with "source" (string), "quote" (verbatim string from sample data), "tags" (array of strings), "sentiment" ("positive"|"negative"|"neutral"|"mixed")
+- "so_what": string — actionable recommendations paragraph
 
-{{
-  "title": "<Dataset/Brand name> — <key finding headline>",
-  "subtitle": "One sentence summarizing the overall read of the data",
-  "sections": [
-    {{
-      "id": "the-read",
-      "heading": "The read",
-      "body": "Executive summary paragraph. Use **bold** for key statistics and important terms. Reference the data — cite counts and percentages."
-    }},
-    {{
-      "id": "<section-slug>",
-      "heading": "<Section heading>",
-      "body": "Analytical paragraph with data-backed insights. Use **bold** for emphasis."
-    }}
-  ],
-  "findings": [
-    {{
-      "number": 1,
-      "confidence": "high",
-      "claim": "Key finding statement with *emphasis* on the core insight",
-      "support": "Supporting evidence with specific numbers, percentages, and data citations from the analysis"
-    }}
-  ],
-  "evidence": [
-    {{
-      "source": "Original data source/filename",
-      "quote": "Verbatim text from the analyzed data",
-      "tags": ["theme_tag", "signal_tag"],
-      "sentiment": "positive"
-    }}
-  ],
-  "so_what": "Actionable recommendations paragraph. Be specific and strategic."
-}}
+CONTENT RULES:
+- Ground everything in actual statistics. Do NOT invent numbers.
+- Evidence quotes MUST be verbatim from the sample data — do NOT fabricate quotes.
+- Use **bold** for emphasis in section bodies, *italics* in finding claims.
 
-=== RULES ===
-1. Produce 2-4 sections. The first section MUST have id="the-read" and be the executive summary.
-2. Produce 3-5 findings ranked by frequency and strategic importance. Each must have confidence: "high", "medium", or "low".
-3. Produce 3-10 evidence items. Quotes MUST be verbatim from the sample data provided — do NOT fabricate quotes.
-4. The "so_what" should be actionable, strategic, and specific to the data.
-5. Use **bold** for emphasis in section bodies and *italics* in finding claims.
-6. Ground everything in the actual statistics and data provided. Do NOT invent numbers.
+REMEMBER: Output ONLY the raw JSON object. First character: {{ — Last character: }}"""
 
-=== CRITICAL ===
-Your ENTIRE response must be ONLY the JSON object. Do NOT wrap it in markdown code fences. Do NOT include any text before or after the JSON. Start your response with {{ and end with }}.
-"""
+REPORT_GENERATION_RETRY_PROMPT = """Your previous response could not be parsed as JSON. This time you MUST return ONLY valid JSON.
 
-REPORT_GENERATION_RETRY_PROMPT = """Your previous response was not valid JSON. You MUST respond with ONLY a raw JSON object.
+ABSOLUTE RULES:
+- First character of your response: {{
+- Last character of your response: }}
+- No markdown, no code fences, no backticks, no explanation, no text outside the JSON.
 
-DO NOT use markdown code fences (```).
-DO NOT include any text before or after the JSON.
-DO NOT add any explanation or commentary.
+Generate a report JSON object with these keys: "title", "subtitle", "sections", "findings", "evidence", "so_what".
 
-Start your response with the opening brace {{ and end with the closing brace }}.
+CONTEXT:
+- Dataset: {filename}
+- Report Type: {report_type}
+- Brand/Focus: {brand_focus}
+- Total Items: {total_items}
 
-Generate the report again as a single valid JSON object with these keys: "title", "subtitle", "sections", "findings", "evidence", "so_what".
-
-=== CONTEXT ===
-Dataset: {filename}
-Report Type: {report_type}
-Brand/Focus: {brand_focus}
-Total Items Analyzed: {total_items}
-
-=== TAG STATISTICS (abbreviated) ===
+TAG STATISTICS:
 {tag_stats}
 
-Respond with ONLY the JSON object starting with {{ now:
-"""
+Return ONLY the JSON object now — first character must be {{ :"""
 
 
 def _build_stats_text(stats: dict) -> str:
@@ -1543,80 +1511,120 @@ def _build_sample_data(session: dict, analyzed_data: list[dict], max_samples: in
     return "\n\n".join(lines)
 
 
+def _try_parse_json(text: str) -> dict | None:
+    """Try to parse a string as JSON, returning None on failure."""
+    try:
+        result = json.loads(text)
+        if isinstance(result, dict):
+            return result
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return None
+
+
+def _fix_common_json_issues(text: str) -> str:
+    """Apply common fixes to malformed JSON strings."""
+    fixed = text
+    # Remove trailing commas before } or ]
+    fixed = re.sub(r",\s*([\]}])", r"\1", fixed)
+    # Fix unescaped newlines inside string values
+    fixed = re.sub(r'(?<=": ")([^"]*?)(\n)([^"]*?)(?=")', lambda m: m.group(0).replace('\n', '\\n'), fixed)
+    # Remove control characters that break JSON
+    fixed = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', fixed)
+    return fixed
+
+
 def _parse_llm_report_json(raw_text: str) -> dict:
     """Extract and parse JSON from the LLM response, handling markdown fences
     and other common LLM response quirks. If all parsing fails, constructs a
     minimal valid report from whatever text was returned."""
+    if not raw_text or not raw_text.strip():
+        log.warning("Empty LLM response received")
+        return _build_minimal_fallback_report("")
+
     text = raw_text.strip()
 
-    # ── Strategy 1: Strip markdown code fences (```json ... ```) ──────────
-    cleaned = re.sub(r"^```(?:json|JSON)?\s*\n?", "", text)
-    cleaned = re.sub(r"\n?```\s*$", "", cleaned).strip()
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
+    # ── Strategy 1: Direct parse (ideal case — LLM followed instructions) ─
+    result = _try_parse_json(text)
+    if result:
+        return result
 
-    # ── Strategy 2: Strip any text before first { and after last } ────────
+    # ── Strategy 2: Strip markdown code fences (```json ... ```) ──────────
+    # Handle various fence styles: ```json, ``` json, ```JSON, etc.
+    cleaned = re.sub(r"^```\s*(?:json|JSON)?\s*\n?", "", text)
+    cleaned = re.sub(r"\n?\s*```\s*$", "", cleaned).strip()
+    result = _try_parse_json(cleaned)
+    if result:
+        return result
+
+    # ── Strategy 3: Extract JSON between first { and last } ──────────────
     brace_start = text.find("{")
     brace_end = text.rfind("}")
     if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
         candidate = text[brace_start:brace_end + 1]
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            pass
 
-        # ── Strategy 3: Fix common JSON issues (trailing commas, single quotes) ──
-        fixed = candidate
-        # Remove trailing commas before } or ]
-        fixed = re.sub(r",\s*([\]}])", r"\1", fixed)
-        # Replace single quotes with double quotes (risky but helpful)
-        # Only if there are no double quotes in values
-        if '"' not in fixed and "'" in fixed:
-            fixed = fixed.replace("'", '"')
-        try:
-            return json.loads(fixed)
-        except json.JSONDecodeError:
-            pass
+        result = _try_parse_json(candidate)
+        if result:
+            return result
 
-        # ── Strategy 4: Try to find complete JSON using brace matching ────
+        # ── Strategy 4: Fix common JSON issues and retry ─────────────────
+        fixed = _fix_common_json_issues(candidate)
+        result = _try_parse_json(fixed)
+        if result:
+            return result
+
+        # ── Strategy 5: Balanced brace matching ──────────────────────────
         depth = 0
-        json_start = brace_start
         for i in range(brace_start, len(text)):
             if text[i] == "{":
                 depth += 1
             elif text[i] == "}":
                 depth -= 1
                 if depth == 0:
-                    balanced = text[json_start:i + 1]
-                    try:
-                        return json.loads(balanced)
-                    except json.JSONDecodeError:
-                        # Try with trailing comma fix
-                        balanced_fixed = re.sub(r",\s*([\]}])", r"\1", balanced)
-                        try:
-                            return json.loads(balanced_fixed)
-                        except json.JSONDecodeError:
-                            pass
+                    balanced = text[brace_start:i + 1]
+                    result = _try_parse_json(balanced)
+                    if result:
+                        return result
+                    result = _try_parse_json(_fix_common_json_issues(balanced))
+                    if result:
+                        return result
                     break
 
-    # ── Strategy 5: Look for JSON in code fence blocks anywhere in text ───
-    fence_match = re.search(r"```(?:json|JSON)?\s*\n(\{.*?\})\s*\n?```", text, re.DOTALL)
-    if fence_match:
-        try:
-            return json.loads(fence_match.group(1))
-        except json.JSONDecodeError:
-            pass
+    # ── Strategy 6: Find JSON inside any code fence block in the text ────
+    fence_patterns = [
+        r"```\s*(?:json|JSON)\s*\n(.*?)\n\s*```",
+        r"```\s*\n(.*?)\n\s*```",
+        r"`(\\{.*?\\})`",
+    ]
+    for pattern in fence_patterns:
+        match = re.search(pattern, text, re.DOTALL)
+        if match:
+            result = _try_parse_json(match.group(1).strip())
+            if result:
+                return result
+            result = _try_parse_json(_fix_common_json_issues(match.group(1).strip()))
+            if result:
+                return result
 
-    # ── Strategy 6: Construct a minimal valid report from raw text ─────────
+    # ── Strategy 7: Try to find multiple JSON objects and merge ───────────
+    # Some LLMs split JSON across multiple blocks
+    json_blocks = re.findall(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text)
+    for block in json_blocks:
+        result = _try_parse_json(block)
+        if result and any(k in result for k in ("title", "sections", "findings")):
+            return result
+
+    # ── Strategy 8: Construct a minimal valid report from raw text ────────
     log.warning(f"All JSON parsing strategies failed. Constructing minimal report from raw text. "
                 f"First 300 chars: {raw_text[:300]}")
+    return _build_minimal_fallback_report(raw_text)
 
-    # Try to extract anything useful from the text
-    body_text = raw_text.strip()
+
+def _build_minimal_fallback_report(raw_text: str) -> dict:
+    """Construct a minimal valid report structure from unparseable LLM text."""
+    body_text = raw_text.strip() if raw_text else ""
     # Remove any markdown fences
-    body_text = re.sub(r"```(?:json|JSON)?", "", body_text).strip()
+    body_text = re.sub(r"```\s*(?:json|JSON)?\s*", "", body_text).strip()
     # Limit length
     if len(body_text) > 2000:
         body_text = body_text[:2000] + "..."

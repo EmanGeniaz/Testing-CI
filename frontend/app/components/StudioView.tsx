@@ -814,37 +814,69 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
       </div>
 
       {report ? (
-        <div className="grid gap-12" style={{ gridTemplateColumns: "1fr 320px" }}>
+        <div className="grid gap-16" style={{ gridTemplateColumns: "1fr 340px" }}>
           {/* Main report */}
           <div className="min-w-0">
             <h1 className="text-[56px] leading-[1] tracking-[-0.035em] font-normal text-ink mb-4"
               style={{ fontFamily: "var(--font-display)" }}
               dangerouslySetInnerHTML={{ __html: report.title.replace(/\*([^*]+)\*/g, '<em class="gradient-text" style="font-style:italic;-webkit-text-fill-color:transparent">$1</em>') }} />
 
-            <p className="text-[19px] leading-[1.5] text-muted font-light mb-7 max-w-[620px]"
+            <p className="text-[19px] leading-[1.5] text-muted font-light mb-5 max-w-[620px]"
               style={{ fontFamily: "var(--font-display)" }}>
               {report.subtitle}
             </p>
 
+            {/* Export buttons row */}
+            <div className="flex gap-2 mb-7">
+              <a href={`${BASE}/session/${sessionId}/export/pptx-report`} target="_blank" rel="noopener noreferrer"
+                className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-gradient-to-r from-purple to-pink text-white shadow-[0_4px_12px_rgba(108,76,255,0.25)] hover:-translate-y-px hover:shadow-[0_6px_16px_rgba(108,76,255,0.35)] transition-all inline-flex items-center gap-2">
+                <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14m0 0l-4-4m4 4l4-4M4 19h16" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                Export PPTX
+              </a>
+              <a href={`${BASE}/session/${sessionId}/export/csv`} target="_blank" rel="noopener noreferrer"
+                className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-transparent text-ink-3 border border-rule hover:text-purple hover:border-purple-rule hover:bg-purple-soft transition-all inline-flex items-center gap-2">
+                <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14m0 0l-4-4m4 4l4-4M4 19h16" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                Export CSV
+              </a>
+              <a href={`${BASE}/session/${sessionId}/export/xlsx`} target="_blank" rel="noopener noreferrer"
+                className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-transparent text-ink-3 border border-rule hover:text-purple hover:border-purple-rule hover:bg-purple-soft transition-all inline-flex items-center gap-2">
+                <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14m0 0l-4-4m4 4l4-4M4 19h16" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                Export XLSX
+              </a>
+            </div>
+
             {/* Metadata bar */}
-            <div className="flex gap-7 py-4 border-t border-b border-rule mb-10 font-mono text-[11px] text-ink-3">
-              {Object.entries(report.metadata).map(([key, val]) => (
-                <div key={key} className="flex flex-col gap-1">
-                  <span className="text-muted-2 text-[9px] uppercase tracking-[0.12em]">{key.replace(/_/g, " ")}</span>
-                  <span className="text-ink text-[12px] font-medium">{val}</span>
-                </div>
-              ))}
+            <div className="flex flex-wrap gap-6 py-4 px-5 border border-rule rounded-[10px] bg-white mb-10 font-mono text-[11px] text-ink-3 shadow-[0_1px_2px_rgba(20,19,42,0.04)]">
+              {Object.entries(report.metadata)
+                .filter(([key]) => {
+                  const lower = key.toLowerCase();
+                  return lower !== "llm_error" && lower !== "method" && lower !== "provider" && lower !== "generated_at" && lower !== "refine_error" && lower !== "refine_note" && lower !== "design_theme";
+                })
+                .map(([key, val]) => {
+                  let displayVal = String(val ?? "");
+                  // Truncate long values (e.g. period with repeated text)
+                  if (displayVal.length > 80) {
+                    const firstLine = displayVal.split("\n")[0];
+                    displayVal = firstLine.length > 80 ? firstLine.slice(0, 77) + "..." : firstLine;
+                  }
+                  return (
+                    <div key={key} className="flex flex-col gap-1">
+                      <span className="text-muted-2 text-[9px] uppercase tracking-[0.12em]">{key.replace(/_/g, " ")}</span>
+                      <span className="text-ink text-[12px] font-medium">{displayVal}</span>
+                    </div>
+                  );
+                })}
             </div>
 
             {/* Sections */}
             {report.sections.map((sec, i) => (
-              <div key={sec.id}>
-                <h2 className="text-[28px] font-normal tracking-[-0.025em] text-ink mt-10 mb-[18px] flex items-baseline gap-3.5"
+              <div key={sec.id} className="bg-white border border-rule rounded-[12px] p-7 mb-4 shadow-[0_1px_3px_rgba(20,19,42,0.04)]">
+                <h2 className="text-[28px] font-normal tracking-[-0.025em] text-ink mb-[18px] flex items-baseline gap-3.5"
                   style={{ fontFamily: "var(--font-display)" }}>
                   <span className="font-mono text-[11px] text-purple font-medium tracking-[0.08em]">{String(i+1).padStart(2,"0")}</span>
                   {sec.heading}
                 </h2>
-                <p className="text-[17px] leading-[1.65] text-ink-2 mb-4 font-light max-w-[680px]"
+                <p className="text-[17px] leading-[1.65] text-ink-2 font-light max-w-[680px]"
                   style={{ fontFamily: "var(--font-display)" }}
                   dangerouslySetInnerHTML={{ __html: sec.body.replace(/\*\*([^*]+)\*\*/g, '<strong style="color:var(--color-ink);font-weight:500">$1</strong>') }} />
               </div>
@@ -860,24 +892,26 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
             )}
 
             {report.findings.map(finding => (
-              <div key={finding.number} className="grid gap-[22px] py-6 border-t border-rule" style={{ gridTemplateColumns: "100px 1fr" }}>
-                <div className="flex flex-col gap-2">
-                  <div className="text-[42px] leading-[1] font-normal tracking-[-0.03em] gradient-text"
-                    style={{ fontFamily: "var(--font-display)", WebkitTextFillColor: "transparent" }}>
-                    {String(finding.number).padStart(2,"0")}
+              <div key={finding.number} className="bg-white border border-rule rounded-[12px] p-6 mb-3 shadow-[0_1px_3px_rgba(20,19,42,0.04)]">
+                <div className="grid gap-[22px]" style={{ gridTemplateColumns: "80px 1fr" }}>
+                  <div className="flex flex-col gap-2">
+                    <div className="text-[42px] leading-[1] font-normal tracking-[-0.03em] gradient-text"
+                      style={{ fontFamily: "var(--font-display)", WebkitTextFillColor: "transparent" }}>
+                      {String(finding.number).padStart(2,"0")}
+                    </div>
+                    <span className={`font-mono text-[9px] uppercase tracking-[0.12em] inline-flex items-center gap-[5px] w-max px-2 py-[3px] rounded font-medium
+                      ${finding.confidence === "high" ? "text-green bg-green-soft" : finding.confidence === "low" ? "text-pink bg-pink-soft" : "text-amber bg-amber-soft"}`}>
+                      <span className={`w-[5px] h-[5px] rounded-full ${finding.confidence === "high" ? "bg-green" : finding.confidence === "low" ? "bg-pink" : "bg-amber"}`} />
+                      {finding.confidence}
+                    </span>
                   </div>
-                  <span className={`font-mono text-[9px] uppercase tracking-[0.12em] inline-flex items-center gap-[5px] w-max px-2 py-[3px] rounded font-medium
-                    ${finding.confidence === "high" ? "text-green bg-green-soft" : "text-amber bg-amber-soft"}`}>
-                    <span className={`w-[5px] h-[5px] rounded-full ${finding.confidence === "high" ? "bg-green" : "bg-amber"}`} />
-                    {finding.confidence}
-                  </span>
-                </div>
-                <div>
-                  <div className="text-[23px] leading-[1.3] text-ink font-normal tracking-[-0.02em] mb-2.5"
-                    style={{ fontFamily: "var(--font-display)" }}
-                    dangerouslySetInnerHTML={{ __html: finding.claim.replace(/\*([^*]+)\*/g, '<em style="font-style:italic">$1</em>') }} />
-                  <div className="text-[14px] leading-[1.65] text-muted">
-                    {finding.support}
+                  <div>
+                    <div className="text-[23px] leading-[1.3] text-ink font-normal tracking-[-0.02em] mb-2.5"
+                      style={{ fontFamily: "var(--font-display)" }}
+                      dangerouslySetInnerHTML={{ __html: finding.claim.replace(/\*([^*]+)\*/g, '<em style="font-style:italic">$1</em>') }} />
+                    <div className="text-[14px] leading-[1.65] text-muted">
+                      {finding.support}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -891,16 +925,18 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
                   <span className="font-mono text-[11px] text-purple font-medium tracking-[0.08em]">{String(report.sections.length + 2).padStart(2,"0")}</span>
                   So what
                 </h2>
-                <p className="text-[17px] leading-[1.65] text-ink-2 font-light max-w-[680px]"
-                  style={{ fontFamily: "var(--font-display)" }}>
-                  {report.so_what}
-                </p>
+                <div className="bg-white border border-rule rounded-[12px] p-7 shadow-[0_1px_3px_rgba(20,19,42,0.04)]">
+                  <p className="text-[17px] leading-[1.65] text-ink-2 font-light max-w-[680px]"
+                    style={{ fontFamily: "var(--font-display)" }}>
+                    {report.so_what}
+                  </p>
+                </div>
               </>
             )}
           </div>
 
           {/* Evidence rail */}
-          <aside className="sticky top-[90px] self-start border-l border-rule pl-6 max-h-[calc(100vh-130px)] overflow-y-auto">
+          <aside className="sticky top-[90px] self-start border-l border-rule pl-7 max-h-[calc(100vh-130px)] overflow-y-auto">
             <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted mb-[18px] flex items-baseline justify-between font-medium">
               <span>Evidence</span>
               <span className="text-ink">{report.evidence.length} cited</span>
@@ -964,17 +1000,26 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
       )}
 
       {/* Action bar */}
-      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-white/92 backdrop-blur-[20px] border border-rule rounded-xl px-[18px] py-3 flex items-center gap-4 z-50 shadow-[0_12px_40px_rgba(108,76,255,0.15),0_2px_8px_rgba(20,19,42,0.08)]"
+      <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-white/92 backdrop-blur-[20px] border border-rule rounded-xl px-[18px] py-3 flex items-center gap-3 z-50 shadow-[0_12px_40px_rgba(108,76,255,0.15),0_2px_8px_rgba(20,19,42,0.08)]"
         style={{ animation: "barIn 0.5s 0.3s cubic-bezier(0.2, 0.7, 0.2, 1) both" }}>
         <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted pr-4 border-r border-rule font-medium">
-          <span className="text-green">●</span> {report ? "Draft ready · Awaiting review" : "Analysis complete"}
+          <span className="text-green">●</span> {report ? "Draft ready" : "Analysis complete"}
         </div>
-        <button onClick={onViewReport} className="px-4 py-2 rounded-[6px] font-mono text-[11px] uppercase tracking-[0.1em] font-medium bg-transparent text-ink-3 border border-rule hover:text-ink hover:border-purple-rule hover:bg-purple-soft transition-all">
+        <button onClick={onViewReport} className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-transparent text-ink-3 border border-rule hover:text-ink hover:border-purple-rule hover:bg-purple-soft transition-all">
           View data
         </button>
-        <button className="px-4 py-2 rounded-[6px] font-mono text-[11px] uppercase tracking-[0.1em] font-medium bg-gradient-to-r from-purple to-pink text-white shadow-[0_4px_12px_rgba(108,76,255,0.25)] hover:-translate-y-px hover:shadow-[0_6px_16px_rgba(108,76,255,0.35)] transition-all">
-          Approve & export
-        </button>
+        <a href={`${BASE}/session/${sessionId}/export/pptx-report`} target="_blank" rel="noopener noreferrer"
+          className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-gradient-to-r from-purple to-pink text-white shadow-[0_4px_12px_rgba(108,76,255,0.25)] hover:-translate-y-px hover:shadow-[0_6px_16px_rgba(108,76,255,0.35)] transition-all no-underline">
+          Export PPTX
+        </a>
+        <a href={`${BASE}/session/${sessionId}/export/csv`} target="_blank" rel="noopener noreferrer"
+          className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-transparent text-ink-3 border border-rule hover:text-purple hover:border-purple-rule hover:bg-purple-soft transition-all no-underline">
+          Export CSV
+        </a>
+        <a href={`${BASE}/session/${sessionId}/export/xlsx`} target="_blank" rel="noopener noreferrer"
+          className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-transparent text-ink-3 border border-rule hover:text-purple hover:border-purple-rule hover:bg-purple-soft transition-all no-underline">
+          Export XLSX
+        </a>
       </div>
 
       {/* Refine this report panel */}
