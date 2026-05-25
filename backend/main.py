@@ -26,6 +26,7 @@ from report_types import (
     get_report_type,
     list_report_types,
 )
+from pptx_builder import build_report_pptx, build_data_pptx
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  LOGGING
@@ -374,6 +375,62 @@ def analyse_row(llm, parser, prompt_template, report_type: ReportType,
 BATCH_SIZE  = int(os.getenv("BATCH_SIZE",  "5"))   # rows per concurrent batch
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))   # parallel threads per batch
 
+
+def _cleanse_data(raw_data: list, text_col: str) -> tuple[list, dict]:
+    """Clean raw data before tagging: remove duplicates, empty rows, and noise.
+    Returns (cleaned_data, stats) where stats contains removal counts."""
+    original_count = len(raw_data)
+    removed_duplicates = 0
+    removed_empty = 0
+    removed_noise = 0
+
+    seen_texts = set()
+    cleaned = []
+
+    for row in raw_data:
+        text_value = str(row.get(text_col, "")).strip() if row.get(text_col) is not None else ""
+
+        # Remove rows where text column is empty/null/whitespace
+        if not text_value:
+            removed_empty += 1
+            continue
+
+        # Remove rows that are too short (< 10 characters — likely noise)
+        if len(text_value) < 10:
+            removed_noise += 1
+            continue
+
+        # Remove exact duplicate rows (based on the text column)
+        if text_value in seen_texts:
+            removed_duplicates += 1
+            continue
+
+        # Remove rows that are obviously spam (repeated characters, all caps gibberish)
+        # Check for repeated characters (e.g., "aaaaaaa" or "!!!!!!")
+        if len(text_value) > 0:
+            unique_chars = set(text_value.replace(" ", ""))
+            # If the text has very few unique characters relative to length, it's likely spam
+            if len(unique_chars) <= 3 and len(text_value) > 15:
+                removed_noise += 1
+                continue
+            # Check for all-caps gibberish: all uppercase, no real words (very short words)
+            if (text_value.isupper() and len(text_value) > 20
+                    and all(len(w) <= 2 for w in text_value.split())):
+                removed_noise += 1
+                continue
+
+        seen_texts.add(text_value)
+        cleaned.append(row)
+
+    stats = {
+        "original": original_count,
+        "cleaned": len(cleaned),
+        "removed_duplicates": removed_duplicates,
+        "removed_empty": removed_empty,
+        "removed_noise": removed_noise,
+    }
+    return cleaned, stats
+
 def _run_tagging_bg(session_id: str, provider: str, api_key: str,
                     model: Optional[str], session: dict, run_id: str,
                     report_type_id: str):
@@ -394,6 +451,15 @@ def _run_tagging_bg(session_id: str, provider: str, api_key: str,
         text_col   = schema_cfg["primary_text_column"]
         context    = session.get("dataset_context", {})
         raw_data   = session["raw_data"]
+
+        # ── Data cleansing sub-agent ──────────────────────────────────────
+        raw_data, cleanse_stats = _cleanse_data(raw_data, text_col)
+        log.info(f"Run {run_id}: Data cleansing complete — "
+                 f"original={cleanse_stats['original']}, "
+                 f"cleaned={cleanse_stats['cleaned']}, "
+                 f"removed_duplicates={cleanse_stats['removed_duplicates']}, "
+                 f"removed_empty={cleanse_stats['removed_empty']}, "
+                 f"removed_noise={cleanse_stats['removed_noise']}")
 
         # TEST_ROW_LIMIT caps the number of rows tagged per run. Set to a small
         # value (e.g. 20) on deployed/test environments to keep LLM costs bounded
@@ -798,6 +864,81 @@ def export_json_file(session_id: str):
     return StreamingResponse(iter([json.dumps(data, indent=2, default=str)]),
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="analysis_{session_id[:8]}.json"'})
+
+
+@app.get("/session/{session_id}/export/pptx")
+def export_pptx(session_id: str):
+    """Export tagged data as a PPTX table presentation (raw data in slides)."""
+    s = get_session(session_id)
+    data = s.get("analyzed_data", [])
+    if not data:
+        raise HTTPException(status_code=404, detail="No analyzed data yet")
+    filename = s.get("filename", "data")
+    pptx_bytes = build_data_pptx(data, filename)
+    return StreamingResponse(
+        iter([pptx_bytes]),
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": f'attachment; filename="{filename}_data.pptx"'},
+    )
+
+
+@app.get("/session/{session_id}/export/pptx-report")
+def export_pptx_report(session_id: str):
+    """Export a polished PPTX report presentation generated from tagged analysis data."""
+    session = get_session(session_id)
+    analyzed_data = session.get("analyzed_data", [])
+    if not analyzed_data:
+        raise HTTPException(status_code=404, detail="No analyzed data yet. Run tagging first.")
+
+    # Generate report data inline (same logic as the generate-report endpoint)
+    report_data = _generate_fallback_report(session, analyzed_data)
+
+    # Try LLM-based report if possible (best effort — fall back to statistical)
+    try:
+        payload = GenerateReportPayload()
+        llm, provider_name = _resolve_llm_for_report(session, payload)
+        if llm is not None:
+            context = session.get("dataset_context", {})
+            report_type_id = session.get("report_type", DEFAULT_REPORT_TYPE_ID)
+            stats = _collect_tag_stats(analyzed_data)
+            stats_text = _build_stats_text(stats)
+            sample_text = _build_sample_data(session, analyzed_data, max_samples=20)
+
+            prompt_text = REPORT_GENERATION_PROMPT.format(
+                filename=session.get("filename", "Dataset"),
+                report_type=report_type_id,
+                brand_focus=context.get("focus_brand", "Not specified"),
+                dataset_type=context.get("dataset_type", "Not specified"),
+                additional_context=context.get("additional_context", "None"),
+                total_items=stats["total_rows"] - stats["error_rows"],
+                tag_stats=stats_text,
+                sample_data=sample_text,
+            )
+            response = llm.invoke(prompt_text)
+            raw_content = response.content if hasattr(response, "content") else str(response)
+            report_data = _parse_llm_report_json(raw_content)
+
+            # Ensure metadata
+            if "metadata" not in report_data:
+                report_data["metadata"] = {}
+            valid = stats["total_rows"] - stats["error_rows"]
+            report_data["metadata"]["items_reviewed"] = valid
+            report_data["metadata"]["report_type"] = report_type_id
+            report_data["metadata"]["generated_at"] = datetime.utcnow().isoformat()
+            report_data["metadata"]["method"] = "llm"
+            report_data["metadata"]["provider"] = provider_name
+    except Exception as e:
+        log.warning(f"LLM report generation failed for PPTX export, using fallback: {e}")
+        # report_data already has the fallback
+
+    # Build the PPTX
+    filename = session.get("filename", "report")
+    pptx_bytes = build_report_pptx(report_data, analyzed_data)
+    return StreamingResponse(
+        iter([pptx_bytes]),
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={"Content-Disposition": f'attachment; filename="{filename}_report.pptx"'},
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1557,3 +1698,152 @@ def generate_report(session_id: str, payload: GenerateReportPayload = None):
              f"{len(report['evidence'])} evidence items")
 
     return report
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  REPORT REFINEMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+REFINE_REPORT_PROMPT = """You are a senior insights analyst. You have been given an existing report and user feedback requesting changes.
+
+Your task is to regenerate the report incorporating the user's feedback while preserving the data-backed nature of the original.
+
+=== CURRENT REPORT ===
+{current_report_json}
+
+=== USER FEEDBACK ===
+{feedback}
+
+=== DESIGN THEME ===
+{design_theme}
+
+=== INSTRUCTIONS ===
+Regenerate the report incorporating the user's feedback. If a design theme other than "default" is specified, adjust the tone and language to match (e.g., "corporate_blue" = formal/professional, "pharma_green" = clinical/precise, "bold_pink" = energetic/bold).
+
+Return ONLY valid JSON in the exact same structure as the current report:
+{{
+  "title": "...",
+  "subtitle": "...",
+  "metadata": {{...}},
+  "sections": [...],
+  "findings": [...],
+  "evidence": [...],
+  "so_what": "..."
+}}
+
+=== RULES ===
+1. Preserve the overall structure (sections, findings, evidence format).
+2. Apply the user's feedback precisely — if they ask to sharpen findings, make them sharper. If they ask about tone, adjust it.
+3. Keep all data/statistics accurate — do NOT invent numbers that weren't in the original.
+4. Evidence quotes must remain verbatim from the original — do NOT fabricate quotes.
+5. The metadata should be preserved but update "generated_at" to now and set "method" to "refined".
+6. Return ONLY valid JSON. No preamble, no markdown fences, no text outside the JSON object.
+"""
+
+
+class RefineReportPayload(BaseModel):
+    feedback: str
+    design_theme: str = "default"
+
+
+@app.post("/session/{session_id}/refine-report")
+def refine_report(session_id: str, payload: RefineReportPayload):
+    """Refine an existing report based on user feedback.
+
+    Calls the LLM with the current report + feedback to regenerate.
+    Falls back gracefully if no LLM key is available.
+    """
+    session = get_session(session_id)
+    analyzed_data = session.get("analyzed_data", [])
+
+    if not analyzed_data:
+        raise HTTPException(
+            status_code=400,
+            detail="No analyzed data available. Run tagging first.",
+        )
+
+    # Generate the current report to use as base for refinement
+    current_report = None
+    try:
+        current_report = generate_report(session_id, GenerateReportPayload())
+    except Exception as e:
+        log.warning(f"Could not generate base report for refinement: {e}")
+        current_report = _generate_fallback_report(session, analyzed_data)
+
+    # Try to get an LLM for refinement
+    llm, provider_name = _resolve_llm_for_report(session, GenerateReportPayload())
+
+    if llm is None:
+        log.info(f"No LLM available for session {session_id} — returning original report unchanged")
+        if isinstance(current_report, dict):
+            current_report.setdefault("metadata", {})
+            current_report["metadata"]["refine_note"] = "No LLM API key configured — report unchanged"
+        return current_report
+
+    log.info(f"Refining report for session {session_id} via {provider_name}: feedback={payload.feedback[:100]}...")
+
+    current_report_json = json.dumps(current_report, indent=2, default=str)
+
+    prompt_text = REFINE_REPORT_PROMPT.format(
+        current_report_json=current_report_json,
+        feedback=payload.feedback,
+        design_theme=payload.design_theme,
+    )
+
+    try:
+        response = llm.invoke(prompt_text)
+        raw_content = response.content if hasattr(response, "content") else str(response)
+        refined_report = _parse_llm_report_json(raw_content)
+    except Exception as e:
+        log.error(f"LLM refinement failed for session {session_id}: {e}\n{traceback.format_exc()}")
+        if isinstance(current_report, dict):
+            current_report.setdefault("metadata", {})
+            current_report["metadata"]["refine_error"] = str(e)[:300]
+        return current_report
+
+    # Normalize the refined report
+    if "title" not in refined_report or not refined_report["title"]:
+        refined_report["title"] = current_report.get("title", "Report")
+    if "subtitle" not in refined_report or not refined_report["subtitle"]:
+        refined_report["subtitle"] = current_report.get("subtitle", "")
+    if "metadata" not in refined_report:
+        refined_report["metadata"] = {}
+
+    original_meta = current_report.get("metadata", {})
+    refined_report["metadata"].setdefault("period", original_meta.get("period", ""))
+    refined_report["metadata"].setdefault("items_reviewed", original_meta.get("items_reviewed", 0))
+    refined_report["metadata"].setdefault("report_type", original_meta.get("report_type", ""))
+    refined_report["metadata"]["generated_at"] = datetime.utcnow().isoformat()
+    refined_report["metadata"]["method"] = "refined"
+    refined_report["metadata"]["provider"] = provider_name
+    refined_report["metadata"]["design_theme"] = payload.design_theme
+
+    if "sections" not in refined_report or not isinstance(refined_report.get("sections"), list):
+        refined_report["sections"] = current_report.get("sections", [])
+    if "findings" not in refined_report or not isinstance(refined_report.get("findings"), list):
+        refined_report["findings"] = current_report.get("findings", [])
+    if "evidence" not in refined_report or not isinstance(refined_report.get("evidence"), list):
+        refined_report["evidence"] = current_report.get("evidence", [])
+    if "so_what" not in refined_report or not refined_report["so_what"]:
+        refined_report["so_what"] = current_report.get("so_what", "")
+
+    for i, finding in enumerate(refined_report["findings"]):
+        finding.setdefault("number", i + 1)
+        finding.setdefault("confidence", "medium")
+        finding.setdefault("claim", "")
+        finding.setdefault("support", "")
+        if finding["confidence"] not in ("high", "medium", "low"):
+            finding["confidence"] = "medium"
+
+    for ev in refined_report["evidence"]:
+        ev.setdefault("source", session.get("filename", "Dataset"))
+        ev.setdefault("quote", "")
+        ev.setdefault("tags", [])
+        ev.setdefault("sentiment", "unknown")
+        if isinstance(ev["tags"], str):
+            ev["tags"] = [t.strip() for t in ev["tags"].split(",") if t.strip()]
+
+    log.info(f"Report refined for session {session_id}: "
+             f"{len(refined_report['sections'])} sections, {len(refined_report['findings'])} findings")
+
+    return refined_report

@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { uploadFile, setContext, setSchema, runTagging, getReportTypes, getStatus, getResults, type ReportTypeInfo } from "../lib/api";
+import { uploadFile, setContext, setSchema, runTagging, getReportTypes, getStatus, getResults, refineReport, type ReportTypeInfo } from "../lib/api";
 
 interface StudioViewProps {
   onSessionReady: (sid: string, filename: string, cols: string[], rowCount: number) => void;
@@ -121,6 +121,11 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
   // Report state
   const [report, setReport] = useState<ReportData | null>(null);
   const [taggedData, setTaggedData] = useState<Record<string, unknown>[]>([]);
+
+  // Refine panel state
+  const [refineFeedback, setRefineFeedback] = useState("");
+  const [refineDesignTheme, setRefineDesignTheme] = useState("default");
+  const [refining, setRefining] = useState(false);
 
   // Tooltip state for coming-soon sources
   const [hoveredSource, setHoveredSource] = useState<string | null>(null);
@@ -248,6 +253,24 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
     };
     poll();
   }, [addStep, rowCount]);
+
+  const handleRefine = async () => {
+    if (!sessionId || !refineFeedback.trim()) return;
+    setRefining(true);
+    addStep("Refining report based on feedback...", "refine");
+    try {
+      const updatedReport = await refineReport(sessionId, refineFeedback, refineDesignTheme);
+      if (updatedReport && updatedReport.title) {
+        setReport(updatedReport);
+      }
+      setRefineFeedback("");
+      addStep("Report refined successfully", "done");
+    } catch {
+      addStep("Refinement failed — original report preserved", "error");
+    } finally {
+      setRefining(false);
+    }
+  };
 
   // Step 1: Agent Selection phase
   if (phase === "select-agent") {
@@ -950,6 +973,91 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
         <button className="px-4 py-2 rounded-[6px] font-mono text-[11px] uppercase tracking-[0.1em] font-medium bg-gradient-to-r from-purple to-pink text-white shadow-[0_4px_12px_rgba(108,76,255,0.25)] hover:-translate-y-px hover:shadow-[0_6px_16px_rgba(108,76,255,0.35)] transition-all">
           Approve & export
         </button>
+      </div>
+
+      {/* Refine this report panel */}
+      <div className="mt-16 mb-24 border-t border-rule pt-10" style={{ animation: "fadeUp 0.6s 0.4s cubic-bezier(0.2, 0.7, 0.2, 1) both" }}>
+        <div className="font-mono text-[10px] uppercase tracking-[0.18em] mb-4 gradient-text-subtle font-medium flex items-center gap-2">
+          <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+            <path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          Refine this report
+        </div>
+        <h3 className="text-[28px] font-normal tracking-[-0.025em] text-ink mb-2"
+          style={{ fontFamily: "var(--font-display)" }}>
+          Iterate until it&apos;s <em className="gradient-text" style={{ fontStyle: "italic", WebkitTextFillColor: "transparent" }}>perfect</em>
+        </h3>
+        <p className="text-[15px] text-muted font-light mb-6 max-w-[600px]" style={{ fontFamily: "var(--font-display)" }}>
+          Tell the AI what to improve. You can refine as many times as you want.
+        </p>
+
+        <div className="bg-white border border-rule rounded-[14px] p-6 shadow-[0_1px_2px_rgba(20,19,42,0.04)]">
+          {/* Feedback textarea */}
+          <textarea
+            className="w-full bg-paper border border-rule rounded-[8px] px-4 py-3 text-[15px] leading-[1.5] text-ink outline-none resize-none transition-all focus:border-purple focus:shadow-[0_0_0_3px_var(--color-purple-soft)] placeholder:text-muted-2 placeholder:italic min-h-[100px]"
+            style={{ fontFamily: "var(--font-display)" }}
+            rows={3}
+            placeholder="e.g. &quot;Make the executive summary punchier&quot; or &quot;Finding #2 is weak, strengthen it&quot; or &quot;Use blue tones for Pfizer&quot;..."
+            value={refineFeedback}
+            onChange={e => setRefineFeedback(e.target.value)}
+            disabled={refining}
+          />
+
+          {/* Quick-action buttons */}
+          <div className="flex flex-wrap gap-2 mt-4">
+            {[
+              { label: "Sharpen findings", value: "Sharpen all findings — make the claims more specific and data-driven" },
+              { label: "Add more evidence", value: "Add more supporting evidence and verbatim quotes to back up each finding" },
+              { label: "Simplify language", value: "Simplify the language throughout — make it more accessible and less jargon-heavy" },
+              { label: "Adjust tone", value: "Make the tone more confident and action-oriented" },
+            ].map(action => (
+              <button
+                key={action.label}
+                onClick={() => setRefineFeedback(prev => prev ? `${prev}\n${action.value}` : action.value)}
+                disabled={refining}
+                className="px-3 py-1.5 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.08em] font-medium bg-paper-2 text-ink-3 border border-rule hover:border-purple-rule hover:text-purple hover:bg-purple-soft transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Design theme dropdown + Apply button */}
+          <div className="flex items-center gap-4 mt-5 pt-5 border-t border-rule">
+            <div className="flex items-center gap-2">
+              <label className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted font-medium">Design</label>
+              <select
+                value={refineDesignTheme}
+                onChange={e => setRefineDesignTheme(e.target.value)}
+                disabled={refining}
+                className="px-3 py-2 text-[13px] border border-rule rounded-[7px] bg-paper focus:border-purple focus:bg-white focus:shadow-[0_0_0_3px_var(--color-purple-soft)] outline-none transition-all"
+              >
+                <option value="default">Default</option>
+                <option value="corporate_blue">Corporate Blue</option>
+                <option value="pharma_green">Pharma Green</option>
+                <option value="bold_pink">Bold Pink</option>
+              </select>
+            </div>
+
+            <div className="flex-1" />
+
+            {refining && (
+              <div className="flex items-center gap-2 font-mono text-[11px] text-purple">
+                <div className="w-4 h-4 border-2 border-purple border-t-transparent rounded-full animate-spin" />
+                Refining...
+              </div>
+            )}
+
+            <button
+              onClick={handleRefine}
+              disabled={refining || !refineFeedback.trim()}
+              className="btn-gradient disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none"
+            >
+              <span>{refining ? "Refining..." : "Apply changes"}</span>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 6h8 M6 2l4 4-4 4"/></svg>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
