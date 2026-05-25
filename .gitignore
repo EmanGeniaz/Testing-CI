@@ -6,6 +6,13 @@
 # ── Claude Code local settings (machine-specific, not for repo) ───────────────
 .claude/settings.local.json
 
+# ── Build artifacts ───────────────────────────────────────────────────────────
+.next/
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+
 # ── OS / editor ───────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
