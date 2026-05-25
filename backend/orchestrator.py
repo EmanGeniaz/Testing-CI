@@ -457,12 +457,15 @@ def _tool_run_tagging(
     log.info(f"Orchestrator starting tagging run {run_id} for session {session_id}")
 
     # Run tagging synchronously (blocking) — the orchestrator will wait for it
+    # Use GPT-4o-mini for tagging (fast + cheap), Opus stays for orchestrator reasoning
+    tagging_provider = os.getenv("TAGGING_PROVIDER", "openai")
+    tagging_model = os.getenv("TAGGING_MODEL", "gpt-4o-mini")
     try:
         m._run_tagging_bg(
             session_id=session_id,
-            provider="claude",
+            provider=tagging_provider,
             api_key="",
-            model=None,
+            model=tagging_model,
             session=session,
             run_id=run_id,
             report_type_id=report_type_id,
