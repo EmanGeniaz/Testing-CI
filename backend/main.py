@@ -798,3 +798,762 @@ def export_json_file(session_id: str):
     return StreamingResponse(iter([json.dumps(data, indent=2, default=str)]),
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="analysis_{session_id[:8]}.json"'})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  REPORT GENERATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class GenerateReportPayload(BaseModel):
+    provider: Optional[str] = None
+    api_key: str = ""
+    model: Optional[str] = None
+
+
+def _collect_tag_stats(analyzed_data: list[dict]) -> dict:
+    """Gather frequency counts for themes, sentiments, signals, drivers, etc.
+    from the analyzed data rows. Works across all report types by inspecting
+    whichever standard tag keys are present."""
+    from collections import Counter
+
+    stats: dict = {
+        "total_rows": len(analyzed_data),
+        "error_rows": 0,
+        "themes": Counter(),
+        "sentiments": Counter(),
+        "sentiment_nuances": Counter(),
+        "emotions": Counter(),
+        "signals": Counter(),
+        "drivers": Counter(),
+        "brands": Counter(),
+        "severities": [],
+        "confidences": [],
+        # Pharma SI specific
+        "stages": Counter(),
+        "unmet_needs": Counter(),
+        "concerns": Counter(),
+        "qol_impacts": Counter(),
+        "reporter_types": Counter(),
+        # GenZ specific
+        "engagement_drivers": Counter(),
+        "purchase_intents": Counter(),
+        "loyalty_levels": Counter(),
+    }
+
+    for row in analyzed_data:
+        if row.get("error"):
+            stats["error_rows"] += 1
+            continue
+
+        # Common fields across report types
+        if row.get("theme"):
+            stats["themes"][row["theme"]] += 1
+        if row.get("sentiment"):
+            stats["sentiments"][row["sentiment"]] += 1
+        if row.get("sentiment_nuance"):
+            stats["sentiment_nuances"][row["sentiment_nuance"]] += 1
+        if row.get("emotion"):
+            stats["emotions"][row["emotion"]] += 1
+        if row.get("driver"):
+            stats["drivers"][row["driver"]] += 1
+        if row.get("brand"):
+            stats["brands"][row["brand"]] += 1
+        if row.get("primary_brand"):
+            stats["brands"][row["primary_brand"]] += 1
+
+        # Signals — may be comma-separated
+        sig_val = row.get("signals", "")
+        if sig_val and isinstance(sig_val, str):
+            for sig in sig_val.split(","):
+                sig = sig.strip()
+                if sig:
+                    stats["signals"][sig] += 1
+
+        # Numeric fields
+        if "severity" in row:
+            try:
+                stats["severities"].append(int(row["severity"]))
+            except (ValueError, TypeError):
+                pass
+        if "confidence" in row:
+            try:
+                stats["confidences"].append(float(row["confidence"]))
+            except (ValueError, TypeError):
+                pass
+
+        # Pharma SI fields
+        if row.get("stage"):
+            stats["stages"][row["stage"]] += 1
+        if row.get("unmet_need"):
+            stats["unmet_needs"][row["unmet_need"]] += 1
+        if row.get("concern"):
+            stats["concerns"][row["concern"]] += 1
+        if row.get("qol_impact"):
+            stats["qol_impacts"][row["qol_impact"]] += 1
+        if row.get("reporter_type"):
+            stats["reporter_types"][row["reporter_type"]] += 1
+
+        # GenZ fields
+        if row.get("engagement_driver"):
+            stats["engagement_drivers"][row["engagement_driver"]] += 1
+        if row.get("purchase_intent"):
+            stats["purchase_intents"][row["purchase_intent"]] += 1
+        if row.get("brand_loyalty_level"):
+            stats["loyalty_levels"][row["brand_loyalty_level"]] += 1
+
+    return stats
+
+
+def _top_n(counter, n: int = 5) -> list[tuple]:
+    """Return the top-n items from a Counter as (key, count) tuples."""
+    if not counter:
+        return []
+    return counter.most_common(n)
+
+
+def _pct(count: int, total: int) -> str:
+    if total == 0:
+        return "0%"
+    return f"{count / total * 100:.0f}%"
+
+
+def _generate_fallback_report(session: dict, analyzed_data: list[dict]) -> dict:
+    """Generate a statistical summary report without calling an LLM.
+    Used when no LLM API key is available."""
+    stats = _collect_tag_stats(analyzed_data)
+    total = stats["total_rows"]
+    errors = stats["error_rows"]
+    valid = total - errors
+    filename = session.get("filename", "Dataset")
+    context = session.get("dataset_context", {})
+    report_type_id = session.get("report_type", DEFAULT_REPORT_TYPE_ID)
+
+    # Build top themes text
+    top_themes = _top_n(stats["themes"], 5)
+    top_sentiments = _top_n(stats["sentiments"])
+    top_signals = _top_n(stats["signals"], 5)
+    top_drivers = _top_n(stats["drivers"], 5)
+
+    # Sentiment distribution text
+    sent_lines = []
+    for sent, cnt in top_sentiments:
+        sent_lines.append(f"**{sent}**: {cnt} ({_pct(cnt, valid)})")
+    sentiment_text = ", ".join(sent_lines) if sent_lines else "No sentiment data"
+
+    # Theme distribution text
+    theme_lines = []
+    for theme, cnt in top_themes:
+        theme_lines.append(f"**{theme}**: {cnt} ({_pct(cnt, valid)})")
+    theme_text = "; ".join(theme_lines) if theme_lines else "No theme data"
+
+    # Executive summary
+    top_theme_name = top_themes[0][0] if top_themes else "N/A"
+    top_theme_count = top_themes[0][1] if top_themes else 0
+    top_sent_name = top_sentiments[0][0] if top_sentiments else "N/A"
+    top_sent_count = top_sentiments[0][1] if top_sentiments else 0
+
+    avg_severity = ""
+    if stats["severities"]:
+        avg_sev = sum(stats["severities"]) / len(stats["severities"])
+        avg_severity = f" Average severity: **{avg_sev:.1f}/10**."
+
+    avg_confidence = ""
+    if stats["confidences"]:
+        avg_conf = sum(stats["confidences"]) / len(stats["confidences"])
+        avg_confidence = f" Average confidence: **{avg_conf:.2f}**."
+
+    exec_summary = (
+        f"Analysis of **{valid}** items from *{filename}*. "
+        f"The dominant theme is **{top_theme_name}** "
+        f"({_pct(top_theme_count, valid)} of items). "
+        f"Sentiment skews **{top_sent_name}** "
+        f"({_pct(top_sent_count, valid)}).{avg_severity}{avg_confidence}"
+    )
+
+    # Build sections
+    sections = [
+        {
+            "id": "the-read",
+            "heading": "The read",
+            "body": exec_summary,
+        },
+        {
+            "id": "theme-distribution",
+            "heading": "Theme distribution",
+            "body": theme_text,
+        },
+        {
+            "id": "sentiment-breakdown",
+            "heading": "Sentiment breakdown",
+            "body": sentiment_text,
+        },
+    ]
+
+    # Signals section
+    if top_signals:
+        sig_lines = [f"**{s}**: {c} ({_pct(c, valid)})" for s, c in top_signals]
+        sections.append({
+            "id": "signal-distribution",
+            "heading": "Signals detected",
+            "body": "; ".join(sig_lines),
+        })
+
+    # Drivers section
+    if top_drivers:
+        drv_lines = [f"**{d}**: {c}" for d, c in top_drivers]
+        sections.append({
+            "id": "driver-distribution",
+            "heading": "Top narrative drivers",
+            "body": "; ".join(drv_lines),
+        })
+
+    # Pharma-specific sections
+    if stats["stages"]:
+        stage_lines = [f"**{s}**: {c}" for s, c in _top_n(stats["stages"])]
+        sections.append({
+            "id": "disease-stages",
+            "heading": "Disease stages",
+            "body": "; ".join(stage_lines),
+        })
+    if stats["unmet_needs"]:
+        need_lines = [f"**{n}**: {c}" for n, c in _top_n(stats["unmet_needs"], 5)]
+        sections.append({
+            "id": "unmet-needs",
+            "heading": "Unmet needs",
+            "body": "; ".join(need_lines),
+        })
+
+    # Build findings from top themes
+    findings = []
+    for i, (theme, cnt) in enumerate(top_themes, start=1):
+        # Determine confidence based on frequency
+        freq_ratio = cnt / valid if valid > 0 else 0
+        if freq_ratio >= 0.2:
+            conf = "high"
+        elif freq_ratio >= 0.1:
+            conf = "medium"
+        else:
+            conf = "low"
+
+        findings.append({
+            "number": i,
+            "confidence": conf,
+            "claim": f"*{theme}* is a {'dominant' if freq_ratio >= 0.2 else 'notable'} theme, appearing in {_pct(cnt, valid)} of analyzed items",
+            "support": f"Found in {cnt} of {valid} items. "
+                       + (f"Most common sentiment in this theme cluster: {top_sent_name}." if top_sentiments else ""),
+        })
+
+    # Build evidence from actual data rows (pick representative quotes)
+    evidence = []
+    seen_themes = set()
+    for row in analyzed_data:
+        if row.get("error"):
+            continue
+        row_theme = row.get("theme", "")
+        if not row_theme or row_theme in seen_themes:
+            continue
+        seen_themes.add(row_theme)
+
+        # Try to get a verbatim quote
+        quote = (
+            row.get("xai_text_evidence", "")
+            or row.get("theme_verbatim", "")
+            or row.get("qol_verbatim", "")
+            or ""
+        )
+        if not quote:
+            # Fall back to source text column
+            schema_cfg = session.get("schema_config", {})
+            text_col = schema_cfg.get("primary_text_column", "")
+            if text_col and text_col in row:
+                source = str(row[text_col])
+                quote = source[:300] + ("..." if len(source) > 300 else "")
+
+        if quote:
+            tags = [row_theme]
+            if row.get("sentiment"):
+                tags.append(row["sentiment"])
+            evidence.append({
+                "source": session.get("filename", "Dataset"),
+                "quote": quote,
+                "tags": tags,
+                "sentiment": row.get("sentiment", "Unknown"),
+            })
+        if len(evidence) >= 10:
+            break
+
+    # Build title
+    focus = context.get("focus_brand", "")
+    title_brand = focus if focus else filename
+    title_headline = f"{top_theme_name} dominates" if top_themes else "Statistical summary"
+    title = f"{title_brand} — {title_headline}"
+
+    # Recommendations
+    so_what_parts = []
+    if top_themes:
+        so_what_parts.append(
+            f"The most frequent theme is **{top_themes[0][0]}** — prioritize monitoring and response strategies around this area."
+        )
+    if top_sentiments and top_sentiments[0][0] == "Negative":
+        so_what_parts.append(
+            "Negative sentiment is dominant — consider proactive communication or crisis preparedness."
+        )
+    elif top_sentiments and top_sentiments[0][0] == "Positive":
+        so_what_parts.append(
+            "Positive sentiment is dominant — leverage this for brand advocacy and amplification."
+        )
+    if top_signals:
+        so_what_parts.append(
+            f"Key signals to watch: {', '.join(s for s, _ in top_signals[:3])}."
+        )
+    if not so_what_parts:
+        so_what_parts.append("Review the tagged data for deeper qualitative insights.")
+
+    return {
+        "title": title,
+        "subtitle": f"Statistical summary of {valid} analyzed items from {filename}",
+        "metadata": {
+            "period": context.get("additional_context", "Not specified"),
+            "items_reviewed": valid,
+            "report_type": report_type_id,
+            "generated_at": datetime.utcnow().isoformat(),
+            "method": "statistical_fallback",
+        },
+        "sections": sections,
+        "findings": findings,
+        "evidence": evidence,
+        "so_what": " ".join(so_what_parts),
+    }
+
+
+REPORT_GENERATION_PROMPT = """You are a senior insights analyst. You have been given a dataset of tagged media/social intelligence data that has already been analyzed with themes, sentiments, signals, drivers, and supporting evidence.
+
+Your task is to synthesize this data into a structured executive report.
+
+=== CONTEXT ===
+Dataset: {filename}
+Report Type: {report_type}
+Brand/Focus: {brand_focus}
+Dataset Type: {dataset_type}
+Additional Context: {additional_context}
+Total Items Analyzed: {total_items}
+
+=== TAG STATISTICS ===
+{tag_stats}
+
+=== SAMPLE TAGGED DATA (representative rows) ===
+{sample_data}
+
+=== INSTRUCTIONS ===
+
+Produce a JSON report with exactly this structure:
+
+{{
+  "title": "<Dataset/Brand name> — <key finding headline>",
+  "subtitle": "One sentence summarizing the overall read of the data",
+  "sections": [
+    {{
+      "id": "the-read",
+      "heading": "The read",
+      "body": "Executive summary paragraph. Use **bold** for key statistics and important terms. Reference the data — cite counts and percentages."
+    }},
+    {{
+      "id": "<section-slug>",
+      "heading": "<Section heading>",
+      "body": "Analytical paragraph with data-backed insights. Use **bold** for emphasis."
+    }}
+  ],
+  "findings": [
+    {{
+      "number": 1,
+      "confidence": "high",
+      "claim": "Key finding statement with *emphasis* on the core insight",
+      "support": "Supporting evidence with specific numbers, percentages, and data citations from the analysis"
+    }}
+  ],
+  "evidence": [
+    {{
+      "source": "Original data source/filename",
+      "quote": "Verbatim text from the analyzed data",
+      "tags": ["theme_tag", "signal_tag"],
+      "sentiment": "positive"
+    }}
+  ],
+  "so_what": "Actionable recommendations paragraph. Be specific and strategic."
+}}
+
+=== RULES ===
+1. Produce 2-4 sections. The first section MUST have id="the-read" and be the executive summary.
+2. Produce 3-5 findings ranked by frequency and strategic importance. Each must have confidence: "high", "medium", or "low".
+3. Produce 3-10 evidence items. Quotes MUST be verbatim from the sample data provided — do NOT fabricate quotes.
+4. The "so_what" should be actionable, strategic, and specific to the data.
+5. Use **bold** for emphasis in section bodies and *italics* in finding claims.
+6. Ground everything in the actual statistics and data provided. Do NOT invent numbers.
+7. Return ONLY valid JSON. No preamble, no markdown fences, no text outside the JSON object.
+"""
+
+
+def _build_stats_text(stats: dict) -> str:
+    """Format tag statistics into a readable text block for the LLM prompt."""
+    lines = []
+    total = stats["total_rows"]
+    errors = stats["error_rows"]
+    valid = total - errors
+
+    lines.append(f"Total rows: {total} (valid: {valid}, errors: {errors})")
+
+    if stats["themes"]:
+        lines.append("\nTheme distribution:")
+        for theme, cnt in _top_n(stats["themes"], 10):
+            lines.append(f"  - {theme}: {cnt} ({_pct(cnt, valid)})")
+
+    if stats["sentiments"]:
+        lines.append("\nSentiment distribution:")
+        for sent, cnt in _top_n(stats["sentiments"]):
+            lines.append(f"  - {sent}: {cnt} ({_pct(cnt, valid)})")
+
+    if stats["sentiment_nuances"]:
+        lines.append("\nSentiment nuances:")
+        for nuance, cnt in _top_n(stats["sentiment_nuances"], 8):
+            lines.append(f"  - {nuance}: {cnt}")
+
+    if stats["emotions"]:
+        lines.append("\nEmotions:")
+        for emo, cnt in _top_n(stats["emotions"], 8):
+            lines.append(f"  - {emo}: {cnt}")
+
+    if stats["signals"]:
+        lines.append("\nSignals detected:")
+        for sig, cnt in _top_n(stats["signals"], 10):
+            lines.append(f"  - {sig}: {cnt} ({_pct(cnt, valid)})")
+
+    if stats["drivers"]:
+        lines.append("\nNarrative drivers:")
+        for drv, cnt in _top_n(stats["drivers"], 10):
+            lines.append(f"  - {drv}: {cnt}")
+
+    if stats["brands"]:
+        lines.append("\nBrands mentioned:")
+        for brand, cnt in _top_n(stats["brands"], 10):
+            lines.append(f"  - {brand}: {cnt}")
+
+    if stats["severities"]:
+        avg_sev = sum(stats["severities"]) / len(stats["severities"])
+        max_sev = max(stats["severities"])
+        lines.append(f"\nSeverity: avg={avg_sev:.1f}, max={max_sev}")
+
+    if stats["confidences"]:
+        avg_conf = sum(stats["confidences"]) / len(stats["confidences"])
+        lines.append(f"Confidence: avg={avg_conf:.2f}")
+
+    # Pharma SI fields
+    if stats["stages"]:
+        lines.append("\nDisease stages:")
+        for stage, cnt in _top_n(stats["stages"]):
+            lines.append(f"  - {stage}: {cnt}")
+
+    if stats["unmet_needs"]:
+        lines.append("\nUnmet needs:")
+        for need, cnt in _top_n(stats["unmet_needs"], 8):
+            lines.append(f"  - {need}: {cnt}")
+
+    if stats["concerns"]:
+        lines.append("\nConcerns:")
+        for concern, cnt in _top_n(stats["concerns"], 8):
+            lines.append(f"  - {concern}: {cnt}")
+
+    if stats["qol_impacts"]:
+        lines.append("\nQoL impacts:")
+        for qol, cnt in _top_n(stats["qol_impacts"]):
+            lines.append(f"  - {qol}: {cnt}")
+
+    if stats["reporter_types"]:
+        lines.append("\nReporter types:")
+        for rt, cnt in _top_n(stats["reporter_types"]):
+            lines.append(f"  - {rt}: {cnt}")
+
+    # GenZ fields
+    if stats["engagement_drivers"]:
+        lines.append("\nEngagement drivers:")
+        for drv, cnt in _top_n(stats["engagement_drivers"], 8):
+            lines.append(f"  - {drv}: {cnt}")
+
+    if stats["purchase_intents"]:
+        lines.append("\nPurchase intents:")
+        for pi, cnt in _top_n(stats["purchase_intents"]):
+            lines.append(f"  - {pi}: {cnt}")
+
+    if stats["loyalty_levels"]:
+        lines.append("\nLoyalty levels:")
+        for ll, cnt in _top_n(stats["loyalty_levels"]):
+            lines.append(f"  - {ll}: {cnt}")
+
+    return "\n".join(lines)
+
+
+def _build_sample_data(session: dict, analyzed_data: list[dict], max_samples: int = 20) -> str:
+    """Build a text block of representative sample rows for the LLM.
+    Picks a diverse set across themes/sentiments."""
+    schema_cfg = session.get("schema_config", {})
+    text_col = schema_cfg.get("primary_text_column", "")
+
+    # Collect non-error rows
+    valid_rows = [r for r in analyzed_data if not r.get("error")]
+    if not valid_rows:
+        return "No valid analyzed data available."
+
+    # Pick a diverse sample: try to cover different themes
+    seen_themes = set()
+    selected = []
+
+    # First pass: one per theme
+    for row in valid_rows:
+        theme = row.get("theme", "")
+        if theme and theme not in seen_themes:
+            seen_themes.add(theme)
+            selected.append(row)
+            if len(selected) >= max_samples:
+                break
+
+    # Fill remaining slots with other rows
+    if len(selected) < max_samples:
+        for row in valid_rows:
+            if row not in selected:
+                selected.append(row)
+                if len(selected) >= max_samples:
+                    break
+
+    lines = []
+    for i, row in enumerate(selected, 1):
+        parts = [f"--- Sample {i} ---"]
+
+        # Source text
+        if text_col and text_col in row:
+            source = str(row[text_col])
+            if len(source) > 500:
+                source = source[:500] + "..."
+            parts.append(f"Text: {source}")
+
+        # Key tags
+        for key in ("theme", "sentiment", "sentiment_nuance", "emotion",
+                     "driver", "signals", "severity", "confidence", "brand",
+                     "primary_brand",
+                     # Pharma SI
+                     "stage", "unmet_need", "concern", "qol_impact",
+                     "reporter_type",
+                     # GenZ
+                     "engagement_driver", "purchase_intent",
+                     "brand_loyalty_level"):
+            val = row.get(key)
+            if val and str(val).strip() and str(val).strip() != "None":
+                parts.append(f"{key}: {val}")
+
+        # Evidence quotes
+        for key in ("xai_text_evidence", "theme_verbatim",
+                     "unmet_need_verbatim", "concern_verbatim", "qol_verbatim"):
+            val = row.get(key)
+            if val and str(val).strip():
+                parts.append(f"evidence ({key}): {val}")
+
+        lines.append("\n".join(parts))
+
+    return "\n\n".join(lines)
+
+
+def _parse_llm_report_json(raw_text: str) -> dict:
+    """Extract and parse JSON from the LLM response, handling markdown fences
+    and other common LLM response quirks."""
+    text = raw_text.strip()
+
+    # Strip markdown code fences if present
+    if text.startswith("```"):
+        # Remove opening fence (with optional language tag)
+        text = re.sub(r"^```(?:json)?\s*\n?", "", text)
+        # Remove closing fence
+        text = re.sub(r"\n?```\s*$", "", text)
+        text = text.strip()
+
+    # Try direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Try to find a JSON object in the text
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start != -1 and brace_end != -1 and brace_end > brace_start:
+        candidate = text[brace_start:brace_end + 1]
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"Could not parse LLM response as JSON. Raw response (first 500 chars): {raw_text[:500]}")
+
+
+def _resolve_llm_for_report(session: dict, payload: GenerateReportPayload):
+    """Determine the LLM provider/model to use for report generation.
+    Priority: explicit payload > session's last run > env defaults.
+    Returns (llm_instance, provider_name) or (None, None) if no key is available."""
+    provider = payload.provider
+    api_key = payload.api_key
+    model = payload.model
+
+    # If provider not explicitly given, try to infer from session's last run
+    if not provider:
+        # Check if a run was saved with provider info
+        run_id = session.get("run_id")
+        if run_id:
+            run_file = RUNS_DIR / f"{run_id}.json"
+            if run_file.exists():
+                run_data = _read_json(run_file, {})
+                provider = run_data.get("provider", "")
+                if not model:
+                    m = run_data.get("model", "")
+                    if m and m != "default":
+                        model = m
+
+    # Try providers in order if none specified
+    providers_to_try = []
+    if provider:
+        providers_to_try.append(provider)
+    else:
+        # Try each provider based on which env keys are set
+        if os.getenv("ANTHROPIC_API_KEY"):
+            providers_to_try.append("anthropic")
+        if os.getenv("OPENAI_API_KEY"):
+            providers_to_try.append("openai")
+        if os.getenv("GROQ_API_KEY"):
+            providers_to_try.append("groq")
+        if os.getenv("GOOGLE_API_KEY"):
+            providers_to_try.append("google")
+
+    for prov in providers_to_try:
+        try:
+            llm = get_llm(prov, api_key, model)
+            return llm, prov
+        except Exception as e:
+            log.warning(f"Could not initialize LLM provider '{prov}': {e}")
+            continue
+
+    return None, None
+
+
+@app.post("/session/{session_id}/generate-report")
+def generate_report(session_id: str, payload: GenerateReportPayload = None):
+    """Generate a structured report from a session's analyzed (tagged) data.
+
+    Uses the LLM to synthesize findings if a provider/key is available.
+    Falls back to a statistical summary if no LLM is configured.
+    """
+    if payload is None:
+        payload = GenerateReportPayload()
+
+    session = get_session(session_id)
+    analyzed_data = session.get("analyzed_data", [])
+
+    if not analyzed_data:
+        raise HTTPException(
+            status_code=400,
+            detail="No analyzed data available. Run tagging first.",
+        )
+
+    # Check session status — warn if still running
+    status = session.get("status", "unknown")
+    if status == "running":
+        log.info(f"Report generation requested for running session {session_id} — proceeding with partial data")
+
+    log.info(f"Generating report for session {session_id} ({len(analyzed_data)} rows, status={status})")
+
+    # Try to get an LLM
+    llm, provider_name = _resolve_llm_for_report(session, payload)
+
+    if llm is None:
+        log.info(f"No LLM available for session {session_id} — generating statistical fallback report")
+        report = _generate_fallback_report(session, analyzed_data)
+        return report
+
+    # ── LLM-based report generation ───────────────────────────────────────
+    log.info(f"Generating LLM report for session {session_id} via {provider_name}")
+
+    context = session.get("dataset_context", {})
+    report_type_id = session.get("report_type", DEFAULT_REPORT_TYPE_ID)
+    stats = _collect_tag_stats(analyzed_data)
+    stats_text = _build_stats_text(stats)
+    sample_text = _build_sample_data(session, analyzed_data, max_samples=20)
+
+    prompt_text = REPORT_GENERATION_PROMPT.format(
+        filename=session.get("filename", "Dataset"),
+        report_type=report_type_id,
+        brand_focus=context.get("focus_brand", "Not specified"),
+        dataset_type=context.get("dataset_type", "Not specified"),
+        additional_context=context.get("additional_context", "None"),
+        total_items=stats["total_rows"] - stats["error_rows"],
+        tag_stats=stats_text,
+        sample_data=sample_text,
+    )
+
+    try:
+        response = llm.invoke(prompt_text)
+        raw_content = response.content if hasattr(response, "content") else str(response)
+        report = _parse_llm_report_json(raw_content)
+    except Exception as e:
+        log.error(f"LLM report generation failed for session {session_id}: {e}\n{traceback.format_exc()}")
+        log.info("Falling back to statistical report")
+        report = _generate_fallback_report(session, analyzed_data)
+        report["metadata"]["method"] = "statistical_fallback_after_llm_error"
+        report["metadata"]["llm_error"] = str(e)[:300]
+        return report
+
+    # ── Validate and normalize the LLM response ──────────────────────────
+    valid = stats["total_rows"] - stats["error_rows"]
+
+    # Ensure required top-level keys exist with sensible defaults
+    if "title" not in report or not report["title"]:
+        focus = context.get("focus_brand", "")
+        report["title"] = f"{focus or session.get('filename', 'Dataset')} — Analysis Report"
+    if "subtitle" not in report or not report["subtitle"]:
+        report["subtitle"] = f"Analysis of {valid} items"
+    if "metadata" not in report:
+        report["metadata"] = {}
+    report["metadata"].setdefault("period", context.get("additional_context", "Not specified"))
+    report["metadata"]["items_reviewed"] = valid
+    report["metadata"]["report_type"] = report_type_id
+    report["metadata"]["generated_at"] = datetime.utcnow().isoformat()
+    report["metadata"]["method"] = "llm"
+    report["metadata"]["provider"] = provider_name
+
+    if "sections" not in report or not isinstance(report.get("sections"), list):
+        report["sections"] = []
+    if "findings" not in report or not isinstance(report.get("findings"), list):
+        report["findings"] = []
+    if "evidence" not in report or not isinstance(report.get("evidence"), list):
+        report["evidence"] = []
+    if "so_what" not in report or not report["so_what"]:
+        report["so_what"] = "Review the findings above and take action based on the data."
+
+    # Normalize findings
+    for i, finding in enumerate(report["findings"]):
+        finding.setdefault("number", i + 1)
+        finding.setdefault("confidence", "medium")
+        finding.setdefault("claim", "")
+        finding.setdefault("support", "")
+        # Validate confidence value
+        if finding["confidence"] not in ("high", "medium", "low"):
+            finding["confidence"] = "medium"
+
+    # Normalize evidence
+    for ev in report["evidence"]:
+        ev.setdefault("source", session.get("filename", "Dataset"))
+        ev.setdefault("quote", "")
+        ev.setdefault("tags", [])
+        ev.setdefault("sentiment", "unknown")
+        if isinstance(ev["tags"], str):
+            ev["tags"] = [t.strip() for t in ev["tags"].split(",") if t.strip()]
+
+    log.info(f"LLM report generated for session {session_id}: "
+             f"{len(report['sections'])} sections, {len(report['findings'])} findings, "
+             f"{len(report['evidence'])} evidence items")
+
+    return report
