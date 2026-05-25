@@ -34,9 +34,6 @@ services:
         value: "5"
       - key: MAX_WORKERS
         value: "3"
-      # DATA_DIR points at the persistent disk mount so runs survive deploys
-      - key: DATA_DIR
-        value: /var/data
       # Secret keys must be filled in manually in the Render dashboard.
       - key: ANTHROPIC_API_KEY
         sync: false
@@ -46,7 +43,3 @@ services:
         sync: false
       - key: GOOGLE_API_KEY
         sync: false
-    disk:
-      name: ci-agent-data
-      mountPath: /var/data
-      sizeGB: 1
