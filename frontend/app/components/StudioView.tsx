@@ -8,8 +8,64 @@ interface StudioViewProps {
   sessionId: string | null;
 }
 
-type Phase = "compose" | "configure" | "running" | "report";
-type ComposeMode = "chat" | "form";
+type Phase = "select-agent" | "data-sources" | "configure" | "running" | "report";
+
+interface AgentOption {
+  id: string;
+  name: string;
+  description: string;
+  initials: string;
+  gradient: string;
+}
+
+const AGENTS: AgentOption[] = [
+  { id: "brand_insights", name: "Brand Insights", description: "Brand health, perception tracking, equity analysis", initials: "BI", gradient: "linear-gradient(135deg, #6c4cff 0%, #a899ff 100%)" },
+  { id: "category_insights", name: "Category Insights", description: "Market trends, category dynamics, growth signals", initials: "CI", gradient: "linear-gradient(135deg, #4d8cff 0%, #99bfff 100%)" },
+  { id: "competitive_intelligence", name: "Competitive Intelligence", description: "Head-to-head positioning, share of voice, threat analysis", initials: "CO", gradient: "linear-gradient(135deg, #ff4d8d 0%, #ff99bd 100%)" },
+  { id: "issues_crisis", name: "Issues & Crisis", description: "Risk signals, narrative tracking, reputation monitoring", initials: "IC", gradient: "linear-gradient(135deg, #d4a017 0%, #f0d060 100%)" },
+  { id: "pharma_social", name: "Pharma Social Intelligence", description: "Patient journey, HCP sentiment, disease-area insights", initials: "PS", gradient: "linear-gradient(135deg, #18a957 0%, #60e090 100%)" },
+  { id: "genz_tracker", name: "Gen Z Brand Tracker", description: "Youth culture signals, platform trends, value alignment", initials: "GZ", gradient: "linear-gradient(135deg, #ff4d8d 0%, #6c4cff 100%)" },
+];
+
+interface DataSourceOption {
+  id: string;
+  name: string;
+  category: string;
+  available: boolean;
+}
+
+const DATA_SOURCES: { category: string; sources: DataSourceOption[] }[] = [
+  {
+    category: "Social Listening Platforms",
+    sources: [
+      { id: "brandwatch", name: "Brandwatch", category: "social_listening", available: false },
+      { id: "meltwater", name: "Meltwater", category: "social_listening", available: false },
+      { id: "sprinklr", name: "Sprinklr", category: "social_listening", available: false },
+      { id: "talkwalker", name: "Talkwalker", category: "social_listening", available: false },
+    ],
+  },
+  {
+    category: "Social Media Direct",
+    sources: [
+      { id: "reddit_api", name: "Reddit API", category: "social_direct", available: false },
+      { id: "twitter_api", name: "X / Twitter API", category: "social_direct", available: false },
+      { id: "meta_api", name: "Meta API", category: "social_direct", available: false },
+    ],
+  },
+  {
+    category: "InfoVision API",
+    sources: [
+      { id: "infovision", name: "InfoVision API", category: "infovision", available: false },
+    ],
+  },
+  {
+    category: "Traditional Media",
+    sources: [
+      { id: "news_api", name: "News API", category: "traditional", available: false },
+      { id: "print_archives", name: "Print Archives", category: "traditional", available: false },
+    ],
+  },
+];
 
 interface ThinkingStep {
   time: string;
@@ -31,9 +87,16 @@ interface ReportData {
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function StudioView({ onSessionReady, onViewReport, sessionId: existingSession }: StudioViewProps) {
-  const [phase, setPhase] = useState<Phase>("compose");
-  const [composeMode, setComposeMode] = useState<ComposeMode>("chat");
+  const [phase, setPhase] = useState<Phase>("select-agent");
   const [prompt, setPrompt] = useState("");
+
+  // Agent selection state
+  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  const [customAgentPrompt, setCustomAgentPrompt] = useState("");
+
+  // Data sources state
+  const [selectedDataSources, setSelectedDataSources] = useState<string[]>([]);
+  const [contextBrief, setContextBrief] = useState("");
 
   // Upload state
   const [file, setFile] = useState<File | null>(null);
@@ -58,6 +121,9 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
   // Report state
   const [report, setReport] = useState<ReportData | null>(null);
   const [taggedData, setTaggedData] = useState<Record<string, unknown>[]>([]);
+
+  // Tooltip state for coming-soon sources
+  const [hoveredSource, setHoveredSource] = useState<string | null>(null);
 
   const thinkingRef = useRef<HTMLDivElement>(null);
 
@@ -87,12 +153,20 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
       setSessionId(res.session_id);
       const defaultPrimary = res.columns.find((c: string) => /detail|text|content|body|description|review/i.test(c)) || res.columns[0];
       setPrimaryCol(defaultPrimary);
-      setPhase("configure");
+      if (!selectedDataSources.includes("file_upload")) {
+        setSelectedDataSources(prev => [...prev, "file_upload"]);
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Upload failed");
     } finally {
       setUploading(false);
     }
+  }, [selectedDataSources]);
+
+  const toggleDataSource = useCallback((id: string) => {
+    setSelectedDataSources(prev =>
+      prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
+    );
   }, []);
 
   const handleRun = async () => {
@@ -103,23 +177,29 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
     setProgress(0);
     setAnalyzedRows(0);
 
-    addStep("Uploading and parsing dataset", "ingest");
+    const agentLabel = selectedAgent === "custom"
+      ? "Custom Agent"
+      : AGENTS.find(a => a.id === selectedAgent)?.name || selectedAgent || "";
+    addStep(`Initializing ${agentLabel} agent`, "ingest");
+
+    const additionalContext = [contextBrief, customAgentPrompt, prompt].filter(Boolean).join("\n\n");
 
     try {
-      await setContext({ session_id: sessionId, dataset_type: "Single brand", focus_brand: "", additional_context: prompt });
+      await setContext({ session_id: sessionId, dataset_type: "Single brand", focus_brand: "", additional_context: additionalContext });
       addStep("Dataset context configured", "config");
 
       await setSchema({ session_id: sessionId, primary_text_column: primaryCol, visible_columns: columns, ai_columns: [primaryCol] });
       addStep(`Schema mapped — primary text: ${primaryCol}`, "schema");
 
-      await runTagging({ session_id: sessionId, provider, report_type: reportType });
-      addStep(`Tagging started — ${provider} / ${reportType}`, "agent");
+      const effectiveReportType = selectedAgent && selectedAgent !== "custom" ? selectedAgent : reportType;
+      await runTagging({ session_id: sessionId, provider, report_type: effectiveReportType });
+      addStep(`Tagging started — ${provider} / ${effectiveReportType}`, "agent");
 
       onSessionReady(sessionId, file?.name || "dataset", columns, rowCount);
       pollStatus(sessionId);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to start");
-      setPhase("compose");
+      setPhase("select-agent");
     }
   };
 
@@ -169,8 +249,8 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
     poll();
   }, [addStep, rowCount]);
 
-  // Compose phase
-  if (phase === "compose") {
+  // Step 1: Agent Selection phase
+  if (phase === "select-agent") {
     return (
       <div className="px-12 py-14 max-w-[1280px]" style={{ animation: "fadeUp 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) both" }}>
         {/* Hero */}
@@ -179,104 +259,218 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
             <span className="w-5 h-[1px] bg-gradient-to-r from-purple to-pink inline-block" />
             Consumer Intelligence Studio
           </div>
-          <h1 className="text-[68px] leading-[0.98] tracking-[-0.035em] font-normal text-ink mb-[18px] max-w-[820px]"
+          <h1 className="text-[52px] leading-[1] tracking-[-0.035em] font-normal text-ink mb-[18px] max-w-[820px]"
             style={{ fontFamily: "var(--font-display)" }}>
-            What would you like<br/>to <em className="gradient-text" style={{ fontStyle: "italic", WebkitTextFillColor: "transparent" }}>understand</em>?
+            Choose your <em className="gradient-text" style={{ fontStyle: "italic", WebkitTextFillColor: "transparent" }}>agent</em>
           </h1>
-          <p className="text-[20px] leading-[1.5] text-muted font-light max-w-[640px] tracking-[-0.01em]"
+          <p className="text-[18px] leading-[1.5] text-muted font-light max-w-[640px] tracking-[-0.01em]"
             style={{ fontFamily: "var(--font-display)" }}>
-            Describe a question in plain language, or upload a dataset directly. The agent does the research; you keep the judgment.
+            Select a pre-configured analysis agent, or create your own with a custom prompt and methodology.
           </p>
         </header>
 
-        {/* Mode tabs */}
-        <div className="flex gap-0 mb-4">
+        {/* Step indicator */}
+        <div className="flex items-center gap-3 mb-8">
           {[
-            { id: "chat" as ComposeMode, num: "01", label: "Ask" },
-            { id: "form" as ComposeMode, num: "02", label: "Upload & Tag" },
-          ].map(tab => (
+            { num: "01", label: "Agent", active: true },
+            { num: "02", label: "Data Sources", active: false },
+            { num: "03", label: "Configure", active: false },
+          ].map((step, i) => (
+            <div key={step.num} className="flex items-center gap-3">
+              {i > 0 && <span className="w-8 h-px bg-rule" />}
+              <span className={`font-mono text-[10px] uppercase tracking-[0.14em] font-medium ${step.active ? "text-purple" : "text-muted-2"}`}>
+                <span className={step.active ? "gradient-text-subtle" : ""}>{step.num}</span>
+                <span className="ml-1.5">{step.label}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Agent cards grid */}
+        <div className="grid grid-cols-2 gap-4 mb-6">
+          {AGENTS.map(agent => (
             <button
-              key={tab.id}
-              onClick={() => setComposeMode(tab.id)}
-              className={`py-2.5 mr-8 font-mono text-[11px] uppercase tracking-[0.14em] relative transition-colors font-medium
-                ${composeMode === tab.id ? "text-ink" : "text-muted-2 hover:text-ink-3"}`}
+              key={agent.id}
+              onClick={() => setSelectedAgent(agent.id)}
+              className="relative text-left bg-white border rounded-[12px] p-5 transition-all cursor-pointer group"
+              style={{
+                borderColor: selectedAgent === agent.id ? "var(--color-purple)" : "var(--color-rule)",
+                borderLeftWidth: selectedAgent === agent.id ? "3px" : "1px",
+                borderImage: selectedAgent === agent.id ? "linear-gradient(180deg, var(--color-purple), var(--color-pink)) 1" : "none",
+                boxShadow: selectedAgent === agent.id
+                  ? "0 4px 20px rgba(108, 76, 255, 0.15)"
+                  : "0 1px 2px rgba(20, 19, 42, 0.04)",
+                transform: selectedAgent === agent.id ? "translateY(-1px)" : "none",
+              }}
             >
-              <span className={composeMode === tab.id ? "gradient-text-subtle" : "text-faint"}>{tab.num}</span>
-              <span className="ml-2">{tab.label}</span>
-              {composeMode === tab.id && (
-                <span className="absolute bottom-[-2px] left-0 right-0 h-[2px] bg-gradient-to-r from-purple to-pink rounded" />
-              )}
+              <div className="flex items-start gap-4">
+                {/* Icon circle */}
+                <div className="w-11 h-11 rounded-full flex items-center justify-center text-white text-[13px] font-mono font-bold tracking-wide shrink-0"
+                  style={{ background: agent.gradient }}>
+                  {agent.initials}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[16px] font-medium text-ink mb-1 tracking-[-0.01em]"
+                    style={{ fontFamily: "var(--font-display)" }}>
+                    {agent.name}
+                  </div>
+                  <div className="text-[13px] text-muted leading-[1.4]">
+                    {agent.description}
+                  </div>
+                </div>
+                {/* Checkmark */}
+                {selectedAgent === agent.id && (
+                  <div className="ml-auto shrink-0 w-6 h-6 rounded-full bg-gradient-to-r from-purple to-pink flex items-center justify-center">
+                    <svg width="12" height="12" fill="none" stroke="white" strokeWidth="2.5" viewBox="0 0 12 12">
+                      <path d="M2.5 6.5L5 9l4.5-6" />
+                    </svg>
+                  </div>
+                )}
+              </div>
             </button>
           ))}
         </div>
 
-        {/* Chat mode */}
-        {composeMode === "chat" && (
-          <div>
-            <div className="relative bg-white border border-rule rounded-[14px] p-7 pb-5 transition-all shadow-[0_1px_2px_rgba(20,19,42,0.04)] gradient-border focus-within:border-purple-rule focus-within:shadow-[0_4px_24px_rgba(108,76,255,0.12)]">
-              <textarea
-                className="w-full bg-transparent border-none outline-none resize-none text-[26px] leading-[1.35] text-ink font-normal tracking-[-0.02em] min-h-[80px] placeholder:text-muted-2 placeholder:italic"
-                style={{ fontFamily: "var(--font-display)" }}
-                rows={2}
-                placeholder="A brand health read on Liquid Death versus the non-alc spirits set over the last 60 days..."
-                value={prompt}
-                onChange={e => setPrompt(e.target.value)}
-              />
-              <div className="flex items-center justify-between mt-3.5 pt-3.5 border-t border-rule">
-                <div className="flex items-center gap-[18px] font-mono text-[10px] uppercase tracking-[0.1em] text-muted-2">
-                  <span className="flex items-center gap-1.5">
-                    <span className="font-mono text-[10px] px-1.5 py-0.5 bg-paper-2 border border-rule rounded text-muted">⏎</span> Run
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="font-mono text-[10px] px-1.5 py-0.5 bg-paper-2 border border-rule rounded text-muted">⇧⏎</span> New line
-                  </span>
-                </div>
-                <button className="btn-gradient" onClick={() => setComposeMode("form")}>
-                  <span>Upload data</span>
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 6h8 M6 2l4 4-4 4"/></svg>
-                </button>
+        {/* Create Your Own card — special styling */}
+        <button
+          onClick={() => setSelectedAgent("custom")}
+          className="relative w-full text-left rounded-[12px] p-5 transition-all cursor-pointer group"
+          style={{
+            border: selectedAgent === "custom" ? "2px solid var(--color-purple)" : "2px dashed var(--color-rule-2)",
+            background: selectedAgent === "custom" ? "var(--color-purple-soft)" : "transparent",
+            boxShadow: selectedAgent === "custom" ? "0 4px 20px rgba(108, 76, 255, 0.15)" : "none",
+          }}
+        >
+          <div className="flex items-start gap-4">
+            <div className="w-11 h-11 rounded-full flex items-center justify-center shrink-0"
+              style={{
+                border: "2px dashed var(--color-purple-3)",
+                background: "linear-gradient(135deg, rgba(108,76,255,0.08), rgba(255,77,141,0.08))",
+              }}>
+              <svg width="18" height="18" fill="none" stroke="var(--color-purple)" strokeWidth="2" viewBox="0 0 24 24">
+                <path d="M12 5v14m-7-7h14" strokeLinecap="round" />
+              </svg>
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[16px] font-medium tracking-[-0.01em] mb-1 gradient-text"
+                style={{ fontFamily: "var(--font-display)", WebkitTextFillColor: "transparent" }}>
+                Create Your Own
+              </div>
+              <div className="text-[13px] text-muted leading-[1.4]">
+                Custom agent with your own prompt and methodology
               </div>
             </div>
+            {selectedAgent === "custom" && (
+              <div className="ml-auto shrink-0 w-6 h-6 rounded-full bg-gradient-to-r from-purple to-pink flex items-center justify-center">
+                <svg width="12" height="12" fill="none" stroke="white" strokeWidth="2.5" viewBox="0 0 12 12">
+                  <path d="M2.5 6.5L5 9l4.5-6" />
+                </svg>
+              </div>
+            )}
+          </div>
+        </button>
 
-            {/* Suggestions */}
-            <div className="mt-[22px] flex flex-wrap gap-2.5">
-              {[
-                { kind: "Brand", text: "Liquid Death — health read" },
-                { kind: "Category", text: "Plant-based meat — Q1 trends" },
-                { kind: "Pharma", text: "HPP patient journey insights" },
-                { kind: "Gen Z", text: "Nike vs Adidas brand perception" },
-              ].map(s => (
-                <button
-                  key={s.text}
-                  onClick={() => { setPrompt(s.text); setComposeMode("form"); }}
-                  className="px-4 py-[9px] bg-white border border-rule rounded-3xl text-[12.5px] text-ink-2 cursor-pointer transition-all flex items-center gap-2 hover:border-purple-rule hover:bg-purple-soft hover:-translate-y-px hover:shadow-[0_4px_12px_rgba(108,76,255,0.1)]"
-                >
-                  <span className="font-mono text-[9px] uppercase tracking-[0.14em] text-purple font-medium">{s.kind}</span>
-                  {s.text}
-                </button>
-              ))}
-            </div>
+        {/* Custom agent prompt input */}
+        {selectedAgent === "custom" && (
+          <div className="mt-4 bg-white border border-rule rounded-[12px] p-5 shadow-[0_1px_2px_rgba(20,19,42,0.04)]"
+            style={{ animation: "fadeUp 0.3s ease-out both" }}>
+            <label className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted font-medium block mb-2">
+              Custom Agent Prompt
+            </label>
+            <textarea
+              className="w-full bg-paper border border-rule rounded-[8px] px-4 py-3 text-[15px] leading-[1.5] text-ink outline-none resize-none transition-all focus:border-purple focus:shadow-[0_0_0_3px_var(--color-purple-soft)] placeholder:text-muted-2 placeholder:italic"
+              style={{ fontFamily: "var(--font-display)" }}
+              rows={3}
+              placeholder="Describe the analysis methodology, what signals to look for, and how to structure the output..."
+              value={customAgentPrompt}
+              onChange={e => setCustomAgentPrompt(e.target.value)}
+            />
           </div>
         )}
 
-        {/* Upload mode */}
-        {composeMode === "form" && (
-          <div className="bg-white border border-rule rounded-[14px] p-7 shadow-[0_1px_2px_rgba(20,19,42,0.04)]">
-            {/* Drop zone */}
+        {/* Continue button */}
+        <div className="flex items-center justify-between mt-8 pt-6 border-t border-rule">
+          <div className="font-mono text-[11px] text-muted-2 uppercase tracking-[0.1em]">
+            {selectedAgent ? (
+              <span className="text-purple font-medium">
+                {selectedAgent === "custom" ? "Custom Agent" : AGENTS.find(a => a.id === selectedAgent)?.name} selected
+              </span>
+            ) : (
+              "Select an agent to continue"
+            )}
+          </div>
+          <button
+            onClick={() => { if (selectedAgent) setPhase("data-sources"); }}
+            disabled={!selectedAgent}
+            className="btn-gradient disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none"
+          >
+            <span>Continue to data sources</span>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 6h8 M6 2l4 4-4 4"/></svg>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Step 2: Data Sources phase
+  if (phase === "data-sources") {
+    return (
+      <div className="px-12 py-14 max-w-[1280px]" style={{ animation: "fadeUp 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both" }}>
+        <header className="mb-8">
+          <div className="font-mono text-[11px] uppercase tracking-[0.18em] mb-[22px] inline-flex items-center gap-[10px] gradient-text-subtle font-medium">
+            <span className="w-5 h-[1px] bg-gradient-to-r from-purple to-pink inline-block" />
+            Consumer Intelligence Studio
+          </div>
+          <h1 className="text-[44px] leading-[1] tracking-[-0.035em] font-normal text-ink mb-[14px] max-w-[820px]"
+            style={{ fontFamily: "var(--font-display)" }}>
+            Connect your <em className="gradient-text" style={{ fontStyle: "italic", WebkitTextFillColor: "transparent" }}>data</em>
+          </h1>
+          <p className="text-[17px] leading-[1.5] text-muted font-light max-w-[640px] tracking-[-0.01em]"
+            style={{ fontFamily: "var(--font-display)" }}>
+            Upload files or connect to listening platforms. Multiple sources can be combined.
+          </p>
+        </header>
+
+        {/* Step indicator */}
+        <div className="flex items-center gap-3 mb-8">
+          {[
+            { num: "01", label: "Agent", active: false, done: true },
+            { num: "02", label: "Data Sources", active: true, done: false },
+            { num: "03", label: "Configure", active: false, done: false },
+          ].map((step, i) => (
+            <div key={step.num} className="flex items-center gap-3">
+              {i > 0 && <span className="w-8 h-px bg-rule" />}
+              <span className={`font-mono text-[10px] uppercase tracking-[0.14em] font-medium ${step.active ? "text-purple" : step.done ? "text-green" : "text-muted-2"}`}>
+                <span className={step.active ? "gradient-text-subtle" : ""}>{step.done ? "✓" : step.num}</span>
+                <span className="ml-1.5">{step.label}</span>
+              </span>
+            </div>
+          ))}
+        </div>
+
+        {/* Upload files section */}
+        <div className="mb-8">
+          <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted font-medium mb-3 flex items-center gap-2">
+            <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+              <path d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Upload Files
+          </div>
+          <div className="bg-white border border-rule rounded-[12px] p-5 shadow-[0_1px_2px_rgba(20,19,42,0.04)]">
             <div
               onDragOver={e => { e.preventDefault(); setDragging(true); }}
               onDragLeave={() => setDragging(false)}
               onDrop={e => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}
               onClick={() => document.getElementById("studio-file-input")?.click()}
-              className={`flex flex-col items-center justify-center gap-3 py-10 rounded-xl border-2 border-dashed cursor-pointer transition-all mb-6
+              className={`flex flex-col items-center justify-center gap-3 py-8 rounded-xl border-2 border-dashed cursor-pointer transition-all
                 ${dragging ? "border-purple bg-purple-soft" : "border-rule-2 hover:border-purple-rule hover:bg-paper-2"}`}
             >
               <input id="studio-file-input" type="file" className="hidden" accept=".csv,.xlsx,.xls,.json,.docx"
                 onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
               {uploading ? (
-                <div className="w-8 h-8 border-2 border-purple border-t-transparent rounded-full animate-spin" />
+                <div className="w-7 h-7 border-2 border-purple border-t-transparent rounded-full animate-spin" />
               ) : (
-                <svg className="w-8 h-8 text-muted-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-7 h-7 text-muted-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
                 </svg>
               )}
@@ -289,27 +483,163 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
             </div>
 
             {file && columns.length > 0 && (
-              <div className="text-[13px] text-ink-3 mb-4 flex items-center gap-2">
+              <div className="mt-4 text-[13px] text-ink-3 flex items-center gap-2">
+                <span className="w-5 h-5 rounded-full bg-green flex items-center justify-center">
+                  <svg width="10" height="10" fill="none" stroke="white" strokeWidth="2.5" viewBox="0 0 12 12"><path d="M2.5 6.5L5 9l4.5-6" /></svg>
+                </span>
                 <span className="font-mono text-[10px] uppercase px-1.5 py-0.5 rounded bg-purple-soft text-purple font-bold">
                   {file.name.split(".").pop()?.toUpperCase()}
                 </span>
                 <span className="font-medium">{file.name}</span>
-                <span className="text-muted-2">{rowCount} rows x {columns.length} cols</span>
-              </div>
-            )}
-
-            {prompt && (
-              <div className="mb-4 p-3 bg-paper-2 rounded-lg border border-rule">
-                <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-purple font-medium mb-1">Context from prompt</div>
-                <p className="text-[13px] text-ink-2 italic" style={{ fontFamily: "var(--font-display)" }}>{prompt}</p>
+                <span className="text-muted-2">{rowCount} rows &times; {columns.length} cols</span>
               </div>
             )}
 
             {error && (
-              <div className="text-[12px] text-pink bg-pink-soft border border-pink/20 px-3 py-2 rounded-lg mb-4">{error}</div>
+              <div className="mt-3 text-[12px] text-pink bg-pink-soft border border-pink/20 px-3 py-2 rounded-lg">{error}</div>
             )}
           </div>
+        </div>
+
+        {/* Platform data sources */}
+        {DATA_SOURCES.map(group => (
+          <div key={group.category} className="mb-6">
+            <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted font-medium mb-3 flex items-center gap-2">
+              {group.category === "Social Listening Platforms" && (
+                <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                  <path d="M12 21a9 9 0 100-18 9 9 0 000 18zm0-18v18m-9-9h18" strokeLinecap="round" />
+                </svg>
+              )}
+              {group.category === "Social Media Direct" && (
+                <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                  <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2m8-10a4 4 0 100-8 4 4 0 000 8zm11 4l-4.35-4.35M21 11a5 5 0 11-10 0 5 5 0 0110 0z" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+              {group.category === "InfoVision API" && (
+                <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                  <path d="M13 10V3L4 14h7v7l9-11h-7z" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+              {group.category === "Traditional Media" && (
+                <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                  <path d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V9a2 2 0 012-2h2a2 2 0 012 2v9a2 2 0 01-2 2h-2zM5 12h7m-7 4h7" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+              {group.category}
+            </div>
+            <div className={`grid gap-3 ${group.sources.length === 1 ? "grid-cols-1 max-w-[320px]" : group.sources.length <= 3 ? "grid-cols-3" : "grid-cols-4"}`}>
+              {group.sources.map(source => (
+                <div
+                  key={source.id}
+                  className="relative bg-white border border-rule rounded-[10px] p-4 transition-all"
+                  style={{
+                    opacity: source.available ? 1 : 0.65,
+                    boxShadow: selectedDataSources.includes(source.id)
+                      ? "0 4px 16px rgba(108, 76, 255, 0.12)"
+                      : "0 1px 2px rgba(20, 19, 42, 0.04)",
+                    borderColor: selectedDataSources.includes(source.id)
+                      ? "var(--color-purple)"
+                      : "var(--color-rule)",
+                  }}
+                  onMouseEnter={() => !source.available && setHoveredSource(source.id)}
+                  onMouseLeave={() => setHoveredSource(null)}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="text-[14px] font-medium text-ink tracking-[-0.01em]">
+                      {source.name}
+                    </div>
+                    {!source.available && (
+                      <svg width="14" height="14" fill="none" stroke="var(--color-muted-2)" strokeWidth="1.5" viewBox="0 0 24 24">
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                        <path d="M7 11V7a5 5 0 0110 0v4" />
+                      </svg>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => source.available && toggleDataSource(source.id)}
+                    disabled={!source.available}
+                    className={`mt-3 w-full py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium transition-all ${
+                      source.available
+                        ? selectedDataSources.includes(source.id)
+                          ? "bg-purple text-white"
+                          : "bg-paper-2 text-ink-3 border border-rule hover:border-purple-rule hover:text-purple"
+                        : "bg-paper-2 text-muted-2 border border-rule cursor-not-allowed"
+                    }`}
+                  >
+                    {source.available
+                      ? selectedDataSources.includes(source.id) ? "Connected" : "Connect"
+                      : "Coming soon"}
+                  </button>
+
+                  {/* Tooltip */}
+                  {hoveredSource === source.id && !source.available && (
+                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-1.5 bg-ink text-white text-[11px] rounded-lg whitespace-nowrap z-10 shadow-lg"
+                      style={{ animation: "fadeUp 0.15s ease-out both" }}>
+                      Coming soon
+                      <div className="absolute top-full left-1/2 -translate-x-1/2 w-2 h-2 bg-ink rotate-45 -mt-1" />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+
+        {/* Context Brief */}
+        <div className="mt-8 mb-6">
+          <label className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted font-medium block mb-3 flex items-center gap-2">
+            <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+              <path d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Context Brief
+          </label>
+          <div className="bg-white border border-rule rounded-[12px] p-5 shadow-[0_1px_2px_rgba(20,19,42,0.04)]">
+            <textarea
+              className="w-full bg-transparent border border-rule rounded-[8px] px-4 py-3 text-[15px] leading-[1.5] text-ink outline-none resize-none transition-all focus:border-purple focus:shadow-[0_0_0_3px_var(--color-purple-soft)] placeholder:text-muted-2 placeholder:italic min-h-[100px]"
+              style={{ fontFamily: "var(--font-display)" }}
+              rows={4}
+              placeholder="Describe what you need from this analysis... e.g., 'Compare brand perception of Liquid Death vs non-alc spirits over the last 60 days, focusing on Gen Z audiences on Reddit and TikTok'"
+              value={contextBrief}
+              onChange={e => setContextBrief(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {error && (
+          <div className="text-[12px] text-pink bg-pink-soft border border-pink/20 px-3 py-2 rounded-lg mb-4">{error}</div>
         )}
+
+        {/* Navigation */}
+        <div className="flex items-center justify-between mt-8 pt-6 border-t border-rule">
+          <button onClick={() => setPhase("select-agent")} className="font-mono text-[11px] text-muted hover:text-ink transition-colors uppercase tracking-[0.1em]">
+            &larr; Back to agents
+          </button>
+          <div className="flex items-center gap-4">
+            {/* Summary */}
+            <div className="font-mono text-[10px] text-muted-2 uppercase tracking-[0.1em]">
+              {selectedDataSources.length > 0 || (file && columns.length > 0) ? (
+                <span className="text-purple font-medium">
+                  {(file && columns.length > 0 ? 1 : 0) + selectedDataSources.filter(s => s !== "file_upload").length} source(s) selected
+                </span>
+              ) : (
+                "Upload a file to continue"
+              )}
+            </div>
+            <button
+              onClick={() => {
+                if (file && columns.length > 0) {
+                  setPrompt(contextBrief);
+                  setPhase("configure");
+                }
+              }}
+              disabled={!file || columns.length === 0}
+              className="btn-gradient disabled:opacity-40 disabled:cursor-not-allowed disabled:transform-none disabled:shadow-none"
+            >
+              <span>Continue to configure</span>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 6h8 M6 2l4 4-4 4"/></svg>
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -382,8 +712,8 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
           )}
 
           <div className="flex items-center justify-between pt-4 border-t border-rule">
-            <button onClick={() => setPhase("compose")} className="font-mono text-[11px] text-muted hover:text-ink transition-colors uppercase tracking-[0.1em]">
-              ← Back
+            <button onClick={() => setPhase("data-sources")} className="font-mono text-[11px] text-muted hover:text-ink transition-colors uppercase tracking-[0.1em]">
+              &larr; Back
             </button>
             <button onClick={handleRun} className="btn-gradient">
               <span>Run agent</span>
@@ -601,7 +931,7 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
             <button onClick={onViewReport} className="btn-gradient">
               <span>View in workbench</span>
             </button>
-            <button onClick={() => setPhase("compose")} className="font-mono text-[11px] text-muted hover:text-ink uppercase tracking-[0.1em] px-5 py-2.5 border border-rule rounded-lg hover:border-purple-rule transition-all">
+            <button onClick={() => setPhase("select-agent")} className="font-mono text-[11px] text-muted hover:text-ink uppercase tracking-[0.1em] px-5 py-2.5 border border-rule rounded-lg hover:border-purple-rule transition-all">
               New report
             </button>
           </div>
