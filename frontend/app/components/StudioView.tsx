@@ -19,12 +19,12 @@ interface AgentOption {
 }
 
 const AGENTS: AgentOption[] = [
-  { id: "brand_insights", name: "Brand Insights", description: "Brand health, perception tracking, equity analysis", initials: "BI", gradient: "linear-gradient(135deg, #6c4cff 0%, #a899ff 100%)" },
+  { id: "explainable_ai_tagging", name: "Brand Insights", description: "Brand health, perception tracking, equity analysis", initials: "BI", gradient: "linear-gradient(135deg, #6c4cff 0%, #a899ff 100%)" },
   { id: "category_insights", name: "Category Insights", description: "Market trends, category dynamics, growth signals", initials: "CI", gradient: "linear-gradient(135deg, #4d8cff 0%, #99bfff 100%)" },
   { id: "competitive_intelligence", name: "Competitive Intelligence", description: "Head-to-head positioning, share of voice, threat analysis", initials: "CO", gradient: "linear-gradient(135deg, #ff4d8d 0%, #ff99bd 100%)" },
   { id: "issues_crisis", name: "Issues & Crisis", description: "Risk signals, narrative tracking, reputation monitoring", initials: "IC", gradient: "linear-gradient(135deg, #d4a017 0%, #f0d060 100%)" },
-  { id: "pharma_social", name: "Pharma Social Intelligence", description: "Patient journey, HCP sentiment, disease-area insights", initials: "PS", gradient: "linear-gradient(135deg, #18a957 0%, #60e090 100%)" },
-  { id: "genz_tracker", name: "Gen Z Brand Tracker", description: "Youth culture signals, platform trends, value alignment", initials: "GZ", gradient: "linear-gradient(135deg, #ff4d8d 0%, #6c4cff 100%)" },
+  { id: "pharma_social_intelligence", name: "Pharma Social Intelligence", description: "Patient journey, HCP sentiment, disease-area insights", initials: "PS", gradient: "linear-gradient(135deg, #18a957 0%, #60e090 100%)" },
+  { id: "genz_brand_tracker", name: "Gen Z Brand Tracker", description: "Youth culture signals, platform trends, value alignment", initials: "GZ", gradient: "linear-gradient(135deg, #ff4d8d 0%, #6c4cff 100%)" },
 ];
 
 interface DataSourceOption {
@@ -196,7 +196,9 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
       await setSchema({ session_id: sessionId, primary_text_column: primaryCol, visible_columns: columns, ai_columns: [primaryCol] });
       addStep(`Schema mapped — primary text: ${primaryCol}`, "schema");
 
-      const effectiveReportType = selectedAgent && selectedAgent !== "custom" ? selectedAgent : reportType;
+      const backendReportTypes = reportTypes.map(rt => rt.id);
+      const effectiveReportType = selectedAgent && selectedAgent !== "custom" && backendReportTypes.includes(selectedAgent)
+        ? selectedAgent : reportType;
       await runTagging({ session_id: sessionId, provider, report_type: effectiveReportType });
       addStep(`Tagging started — ${provider} / ${effectiveReportType}`, "agent");
 
