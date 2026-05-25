@@ -37,25 +37,35 @@ def _pct_float(count: int, total: int) -> float:
     return round(count / total * 100, 1)
 
 
-def _top_n(counter: Counter, n: int = 10) -> list[tuple[str, int]]:
-    return counter.most_common(n)
+def _top_n(counter: Counter, n: int = 10, min_count: int = 0) -> list[tuple[str, int]]:
+    items = counter.most_common(n)
+    if min_count > 0:
+        items = [(k, v) for k, v in items if v >= min_count]
+    return items
 
 
-def _pick_verbatims(rows: list[dict], fields: list[str], max_count: int = 10) -> list[dict]:
-    """Select the most vivid verbatim quotes from the data."""
+def _pick_verbatims(rows: list[dict], fields: list[str], max_count: int = 10, filter_field: str = "", filter_values: list[str] | None = None) -> list[dict]:
+    """Select the most vivid verbatim quotes from the data, optionally filtered by a field."""
     candidates: list[dict] = []
     for row in rows:
         if row.get("error"):
             continue
+        if filter_field and filter_values:
+            val = str(row.get(filter_field, "")).strip()
+            if val not in filter_values:
+                continue
         for field in fields:
             text = str(row.get(field, "")).strip()
-            if text and len(text) > 20:
+            if text and len(text) > 40:
                 candidates.append({
                     "text": text,
                     "reporter": row.get("reporter_type", "Patient"),
-                    "platform": row.get("platform", row.get("Platform", "Online")),
+                    "platform": row.get("platform") or row.get("Platform") or "Online",
                     "stage": row.get("stage", ""),
                     "theme": row.get("theme", ""),
+                    "concern": row.get("concern", ""),
+                    "unmet_need": row.get("unmet_need", ""),
+                    "qol_impact": row.get("qol_impact", ""),
                 })
     # Sort by length (longer = more descriptive), deduplicate
     seen: set[str] = set()
@@ -451,8 +461,8 @@ def _build_platform_section(stats: dict) -> str:
 
 def _build_themes_section(stats: dict, verbatims: list[dict]) -> str:
     valid = stats["valid"]
-    theme_items = _top_n(stats["themes"], 12)
-    theme_verbatims = [v for v in verbatims if v.get("theme")][:5]
+    theme_items = _top_n(stats["themes"], 12, min_count=2)
+    theme_verbatims = verbatims[:5]
 
     return f"""
     <div id="themes" class="section">
@@ -534,8 +544,8 @@ def _build_journey_section(stats: dict, tagged_data: list[dict]) -> str:
 
 def _build_unmet_needs_section(stats: dict, verbatims: list[dict]) -> str:
     valid = stats["valid"]
-    need_items = _top_n(stats["unmet_needs"], 10)
-    need_verbatims = [v for v in verbatims][:4]
+    need_items = _top_n(stats["unmet_needs"], 10, min_count=2)
+    need_verbatims = verbatims[:4]
 
     if not need_items:
         return ""
@@ -566,8 +576,8 @@ def _build_unmet_needs_section(stats: dict, verbatims: list[dict]) -> str:
 
 def _build_concerns_section(stats: dict, verbatims: list[dict]) -> str:
     valid = stats["valid"]
-    concern_items = _top_n(stats["concerns"], 10)
-    concern_verbatims = [v for v in verbatims][:4]
+    concern_items = _top_n(stats["concerns"], 10, min_count=2)
+    concern_verbatims = verbatims[:4]
 
     if not concern_items:
         return ""
@@ -798,12 +808,17 @@ def build_pharma_html_report(tagged_data: list[dict], metadata: dict) -> str:
 
     page_title = f"{title_base} — Social Intelligence Report"
 
-    # ── Select verbatim quotes ────────────────────────────────────────────
-    verbatim_fields = [
-        "theme_verbatim", "unmet_need_verbatim",
-        "concern_verbatim", "qol_verbatim",
-    ]
-    verbatims = _pick_verbatims(tagged_data, verbatim_fields, max_count=12)
+    # ── Select SECTION-SPECIFIC verbatim quotes (no repeats across sections) ──
+    top_themes = [t for t, _ in stats["themes"].most_common(5)]
+    theme_verbatims = _pick_verbatims(tagged_data, ["theme_verbatim"], max_count=6,
+                                       filter_field="theme", filter_values=top_themes)
+    top_needs = [t for t, _ in stats["unmet_needs"].most_common(5)]
+    need_verbatims = _pick_verbatims(tagged_data, ["unmet_need_verbatim"], max_count=5,
+                                      filter_field="unmet_need", filter_values=top_needs)
+    top_concerns = [t for t, _ in stats["concerns"].most_common(5)]
+    concern_verbatims = _pick_verbatims(tagged_data, ["concern_verbatim"], max_count=5,
+                                         filter_field="concern", filter_values=top_concerns)
+    qol_verbatims = _pick_verbatims(tagged_data, ["qol_verbatim"], max_count=4)
 
     # ── Assemble the full HTML ────────────────────────────────────────────
     html = f"""<!DOCTYPE html>
@@ -847,13 +862,13 @@ def build_pharma_html_report(tagged_data: list[dict], metadata: dict) -> str:
 
     {_build_platform_section(stats)}
 
-    {_build_themes_section(stats, verbatims)}
+    {_build_themes_section(stats, theme_verbatims)}
 
     {_build_journey_section(stats, tagged_data)}
 
-    {_build_unmet_needs_section(stats, verbatims)}
+    {_build_unmet_needs_section(stats, need_verbatims)}
 
-    {_build_concerns_section(stats, verbatims)}
+    {_build_concerns_section(stats, concern_verbatims)}
 
     {_build_qol_section(stats, tagged_data)}
 
