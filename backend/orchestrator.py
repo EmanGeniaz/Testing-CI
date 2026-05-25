@@ -456,26 +456,54 @@ def _tool_run_tagging(
 
     log.info(f"Orchestrator starting tagging run {run_id} for session {session_id}")
 
-    # Run tagging synchronously (blocking) — the orchestrator will wait for it
     # Use GPT-4o-mini for tagging (fast + cheap), Opus stays for orchestrator reasoning
     tagging_provider = os.getenv("TAGGING_PROVIDER", "openai")
     tagging_model = os.getenv("TAGGING_MODEL", "gpt-4o-mini")
-    try:
-        m._run_tagging_bg(
-            session_id=session_id,
-            provider=tagging_provider,
-            api_key="",
-            model=tagging_model,
-            session=session,
-            run_id=run_id,
-            report_type_id=report_type_id,
-        )
-    except Exception as e:
-        log.error(f"Tagging run {run_id} failed: {e}\n{traceback.format_exc()}")
+    log.info(f"Tagging with {tagging_provider}/{tagging_model}")
+
+    import threading
+    tagging_error = [None]
+
+    def _run():
+        try:
+            m._run_tagging_bg(
+                session_id=session_id,
+                provider=tagging_provider,
+                api_key="",
+                model=tagging_model,
+                session=session,
+                run_id=run_id,
+                report_type_id=report_type_id,
+            )
+        except Exception as e:
+            tagging_error[0] = str(e)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    # Poll for progress instead of blocking
+    total_rows = len(session.get("raw_data", []))
+    last_count = 0
+    while thread.is_alive():
+        thread.join(timeout=5)
+        try:
+            s = m.get_session(session_id)
+            count = s.get("analyzed_rows", 0)
+            progress = s.get("progress", 0)
+            if count > last_count:
+                log.info(f"Tagging progress: {count}/{total_rows} ({progress}%) — {tagging_provider}/{tagging_model}")
+                last_count = count
+        except Exception:
+            pass
+
+    if tagging_error[0]:
+        log.error(f"Tagging run {run_id} failed: {tagging_error[0]}")
         return {
             "status": "error",
             "run_id": run_id,
-            "error": str(e)[:500],
+            "provider": tagging_provider,
+            "model": tagging_model,
+            "error": tagging_error[0][:500],
         }
 
     # Fetch final status
@@ -486,9 +514,11 @@ def _tool_run_tagging(
     return {
         "status": status,
         "run_id": run_id,
+        "provider": tagging_provider,
+        "model": tagging_model,
         "total_rows_tagged": len(analyzed_data),
         "error_rows": sum(1 for r in analyzed_data if r.get("error")),
-        "message": f"Tagging complete: {len(analyzed_data)} rows tagged (status={status}).",
+        "message": f"Tagging complete: {len(analyzed_data)} rows tagged using {tagging_provider}/{tagging_model} (status={status}).",
     }
 
 

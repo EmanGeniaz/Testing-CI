@@ -206,13 +206,28 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
         throw new Error("Orchestrator unavailable");
       }
 
+      // Side-channel: poll session status for progress while orchestrator runs
+      let progressPollActive = true;
+      const pollProgress = async () => {
+        while (progressPollActive) {
+          await new Promise(r => setTimeout(r, 4000));
+          if (!progressPollActive) break;
+          try {
+            const st = await getStatus(sessionId);
+            if (st.progress > 0) setProgress(st.progress);
+            if (st.analyzed_rows > 0) setAnalyzedRows(st.analyzed_rows);
+          } catch { /* ignore */ }
+        }
+      };
+      pollProgress();
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) { progressPollActive = false; break; }
         buffer += decoder.decode(value, { stream: true });
 
         const lines = buffer.split("\n");
@@ -225,7 +240,8 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
             if (event.type === "thinking") {
               addStep(event.text, "reasoning");
             } else if (event.type === "tool_call") {
-              addStep(`Calling ${event.tool}`, "tool");
+              const argsHint = event.args?.report_type_id || event.args?.text_column || "";
+              addStep(`Calling ${event.tool}${argsHint ? ` (${argsHint})` : ""}`, "tool");
             } else if (event.type === "tool_result") {
               const summary = typeof event.result === "string"
                 ? event.result.slice(0, 120)
