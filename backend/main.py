@@ -32,6 +32,7 @@ from report_types import (
 # ═══════════════════════════════════════════════════════════════════════════════
 
 LOG_PATH = Path(os.getenv("DATA_DIR", str(Path(__file__).parent))) / "app.log"
+LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
