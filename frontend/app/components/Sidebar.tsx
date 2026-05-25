@@ -109,11 +109,11 @@ export default function Sidebar({ activeView, onViewChange, sessionId }: Sidebar
       {/* Footer */}
       <div className="mt-auto pt-[18px] px-[22px] border-t border-rule flex items-center gap-[11px]">
         <div className="w-[30px] h-[30px] rounded-full bg-gradient-to-br from-purple to-pink text-white font-mono text-[11px] font-medium flex items-center justify-center">
-          SA
+          ED
         </div>
         <div>
-          <div className="text-[13px] text-ink font-medium">Sikander</div>
-          <div className="font-mono text-[10px] text-muted-2 uppercase tracking-[0.1em]">Admin</div>
+          <div className="text-[13px] text-ink font-medium">Emanuel Davidson</div>
+          <div className="font-mono text-[10px] text-muted-2 uppercase tracking-[0.1em]">Research Lead</div>
         </div>
       </div>
     </aside>
