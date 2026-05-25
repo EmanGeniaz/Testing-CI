@@ -2001,6 +2001,35 @@ def refine_report(session_id: str, payload: RefineReportPayload):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  HTML REPORT EXPORT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/session/{session_id}/export/html-report")
+async def export_html_report(session_id: str):
+    session = get_session(session_id)
+    analyzed_data = session.get("analyzed_data", [])
+    if not analyzed_data:
+        raise HTTPException(status_code=400, detail="No analyzed data")
+
+    from html_report_builder import build_pharma_html_report
+
+    metadata = {
+        "filename": session.get("filename", "Report"),
+        "report_type": session.get("report_type", "pharma_social_intelligence"),
+        "context": session.get("dataset_context", {}),
+    }
+
+    html = build_pharma_html_report(analyzed_data, metadata)
+
+    fname = session.get("filename", "report").rsplit(".", 1)[0]
+    return StreamingResponse(
+        iter([html.encode("utf-8")]),
+        media_type="text/html",
+        headers={"Content-Disposition": f'attachment; filename="{fname}_report.html"'}
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  AGENTIC ORCHESTRATOR ROUTER
 # ═══════════════════════════════════════════════════════════════════════════════
 

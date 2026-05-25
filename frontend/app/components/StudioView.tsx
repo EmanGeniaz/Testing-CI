@@ -902,6 +902,11 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
 
             {/* Export buttons row */}
             <div className="flex gap-2 mb-7">
+              <a href={`${BASE}/session/${sessionId}/export/html-report`} target="_blank" rel="noopener noreferrer"
+                className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-gradient-to-r from-purple to-pink text-white shadow-[0_4px_12px_rgba(108,76,255,0.25)] hover:-translate-y-px hover:shadow-[0_6px_16px_rgba(108,76,255,0.35)] transition-all inline-flex items-center gap-2">
+                <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14m0 0l-4-4m4 4l4-4M4 19h16" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                Export HTML Report
+              </a>
               <a href={`${BASE}/session/${sessionId}/export/pptx-report`} target="_blank" rel="noopener noreferrer"
                 className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-gradient-to-r from-purple to-pink text-white shadow-[0_4px_12px_rgba(108,76,255,0.25)] hover:-translate-y-px hover:shadow-[0_6px_16px_rgba(108,76,255,0.35)] transition-all inline-flex items-center gap-2">
                 <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14m0 0l-4-4m4 4l4-4M4 19h16" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -1134,6 +1139,10 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
         <button onClick={onViewReport} className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-transparent text-ink-3 border border-rule hover:text-ink hover:border-purple-rule hover:bg-purple-soft transition-all">
           View data
         </button>
+        <a href={`${BASE}/session/${sessionId}/export/html-report`} target="_blank" rel="noopener noreferrer"
+          className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-gradient-to-r from-purple to-pink text-white shadow-[0_4px_12px_rgba(108,76,255,0.25)] hover:-translate-y-px hover:shadow-[0_6px_16px_rgba(108,76,255,0.35)] transition-all no-underline">
+          Export HTML Report
+        </a>
         <a href={`${BASE}/session/${sessionId}/export/pptx-report`} target="_blank" rel="noopener noreferrer"
           className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium bg-gradient-to-r from-purple to-pink text-white shadow-[0_4px_12px_rgba(108,76,255,0.25)] hover:-translate-y-px hover:shadow-[0_6px_16px_rgba(108,76,255,0.35)] transition-all no-underline">
           Export PPTX
