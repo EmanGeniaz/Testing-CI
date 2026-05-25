@@ -241,7 +241,7 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
               setTaggedData(results.analyzed_data ?? []);
               setTimeout(() => setPhase("report"), 800);
             } else if (event.type === "error") {
-              addStep(`Error: ${event.message || "Unknown"}`, "error");
+              addStep(`Error: ${event.message || event.text || "Unknown"}`, "error");
             }
           } catch {
             // skip malformed JSON lines

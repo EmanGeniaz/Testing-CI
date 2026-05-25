@@ -739,12 +739,12 @@ async def run_orchestrator(
     if not api_key:
         yield json.dumps({
             "type": "error",
-            "text": "ANTHROPIC_API_KEY not configured. Cannot run orchestrator.",
+            "message": "ANTHROPIC_API_KEY not configured. Cannot run orchestrator.",
         }) + "\n"
         return
 
     client = anthropic.Anthropic(api_key=api_key)
-    model = "claude-opus-4-5-20250514"
+    model = os.getenv("ANTHROPIC_MODEL", "claude-opus-4-5")
 
     system_prompt = _build_system_prompt(session_id, user_prompt)
 
@@ -785,14 +785,14 @@ async def run_orchestrator(
             log.error(f"Anthropic API error: {e}")
             yield json.dumps({
                 "type": "error",
-                "text": f"LLM API error: {str(e)[:300]}",
+                "message": f"LLM API error: {str(e)[:300]}",
             }) + "\n"
             return
         except Exception as e:
             log.error(f"Orchestrator LLM call failed: {e}\n{traceback.format_exc()}")
             yield json.dumps({
                 "type": "error",
-                "text": f"Orchestrator error: {str(e)[:300]}",
+                "message": f"Orchestrator error: {str(e)[:300]}",
             }) + "\n"
             return
 
