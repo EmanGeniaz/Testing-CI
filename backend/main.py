@@ -2004,5 +2004,9 @@ def refine_report(session_id: str, payload: RefineReportPayload):
 #  AGENTIC ORCHESTRATOR ROUTER
 # ═══════════════════════════════════════════════════════════════════════════════
 
-from orchestrator_endpoint import router as orchestrator_router
-app.include_router(orchestrator_router)
+try:
+    from orchestrator_endpoint import router as orchestrator_router
+    app.include_router(orchestrator_router)
+    log.info("Orchestrator endpoint registered.")
+except Exception as e:
+    log.warning(f"Orchestrator not available: {e}")
