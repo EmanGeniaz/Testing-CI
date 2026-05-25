@@ -1046,21 +1046,73 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
             Analysis <em className="gradient-text" style={{ fontStyle: "italic", WebkitTextFillColor: "transparent" }}>complete</em>
           </h1>
 
-          <div className="grid grid-cols-4 gap-4 mb-8">
-            {[
-              { label: "Total Rows", value: taggedData.length, color: "text-ink" },
-              { label: "Positive", value: `${taggedData.length ? Math.round(taggedData.filter(r => r.sentiment === "Positive").length / taggedData.length * 100) : 0}%`, color: "text-green" },
-              { label: "Negative", value: `${taggedData.length ? Math.round(taggedData.filter(r => r.sentiment === "Negative").length / taggedData.length * 100) : 0}%`, color: "text-pink" },
-              { label: "Avg Confidence", value: `${taggedData.length ? Math.round(taggedData.reduce((a, r) => a + (Number(r.confidence) || 0), 0) / taggedData.length * 100) : 0}%`, color: "text-purple" },
-            ].map(stat => (
-              <div key={stat.label} className="bg-white border border-rule rounded-xl p-5 text-center">
-                <div className={`text-[32px] font-normal tracking-[-0.03em] ${stat.color}`} style={{ fontFamily: "var(--font-display)" }}>
-                  {stat.value}
+            {(() => {
+              const d = taggedData;
+              const n = d.length;
+              if (!n) return null;
+
+              // Detect which fields exist in the data
+              const hasField = (f: string) => d.some(r => r[f] != null && String(r[f]).trim() !== "");
+              const countField = (f: string, v?: string) => v
+                ? d.filter(r => String(r[f]) === v).length
+                : d.filter(r => r[f] != null && String(r[f]).trim() !== "").length;
+              const topValue = (f: string) => {
+                const counts: Record<string, number> = {};
+                d.forEach(r => { const v = String(r[f] ?? "").trim(); if (v) counts[v] = (counts[v] || 0) + 1; });
+                const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+                return sorted[0] ? `${sorted[0][0]} (${Math.round(sorted[0][1] / n * 100)}%)` : "—";
+              };
+
+              // Build stats based on what fields exist
+              const stats: { label: string; value: string | number; color: string }[] = [
+                { label: "Total Rows", value: n, color: "text-ink" },
+              ];
+
+              if (hasField("sentiment")) {
+                stats.push({ label: "Positive", value: `${Math.round(countField("sentiment", "Positive") / n * 100)}%`, color: "text-green" });
+                stats.push({ label: "Negative", value: `${Math.round(countField("sentiment", "Negative") / n * 100)}%`, color: "text-pink" });
+              }
+              if (hasField("confidence")) {
+                stats.push({ label: "Avg Confidence", value: `${Math.round(d.reduce((a, r) => a + (Number(r.confidence) || 0), 0) / n * 100)}%`, color: "text-purple" });
+              }
+              if (hasField("stage")) {
+                stats.push({ label: "Top Stage", value: topValue("stage"), color: "text-purple" });
+              }
+              if (hasField("theme") || hasField("theme_pharma")) {
+                const f = hasField("theme") ? "theme" : "theme_pharma";
+                stats.push({ label: "Top Theme", value: topValue(f), color: "text-blue" });
+              }
+              if (hasField("unmet_need")) {
+                stats.push({ label: "Unmet Needs Found", value: countField("unmet_need"), color: "text-pink" });
+              }
+              if (hasField("concern")) {
+                stats.push({ label: "Concerns Found", value: countField("concern"), color: "text-amber" });
+              }
+              if (hasField("qol_impact")) {
+                stats.push({ label: "QoL Impacts", value: countField("qol_impact"), color: "text-green" });
+              }
+
+              // If we still only have total rows (unknown schema), show generic field counts
+              if (stats.length === 1) {
+                const allKeys = new Set(d.flatMap(r => Object.keys(r)));
+                stats.push({ label: "Fields per Row", value: allKeys.size, color: "text-purple" });
+                const nonEmpty = d.filter(r => Object.values(r).some(v => v != null && String(v).trim() !== "")).length;
+                stats.push({ label: "Non-empty Rows", value: `${Math.round(nonEmpty / n * 100)}%`, color: "text-green" });
+              }
+
+              return (
+                <div className="grid gap-4 mb-8" style={{ gridTemplateColumns: `repeat(${Math.min(stats.length, 5)}, 1fr)` }}>
+                  {stats.map(stat => (
+                    <div key={stat.label} className="bg-white border border-rule rounded-xl p-5 text-center">
+                      <div className={`text-[32px] font-normal tracking-[-0.03em] ${stat.color}`} style={{ fontFamily: "var(--font-display)" }}>
+                        {stat.value}
+                      </div>
+                      <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted mt-1">{stat.label}</div>
+                    </div>
+                  ))}
                 </div>
-                <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted mt-1">{stat.label}</div>
-              </div>
-            ))}
-          </div>
+              );
+            })()}
 
           <div className="flex gap-3">
             <button onClick={onViewReport} className="btn-gradient">
