@@ -13,6 +13,7 @@ import os
 import json
 import time
 import uuid
+import asyncio
 import logging
 import traceback
 from typing import AsyncGenerator, Optional
@@ -774,7 +775,8 @@ async def run_orchestrator(
         log.info(f"Orchestrator iteration {iteration}/{max_iterations} for session {session_id}")
 
         try:
-            response = client.messages.create(
+            response = await asyncio.to_thread(
+                client.messages.create,
                 model=model,
                 max_tokens=16384,
                 system=system_prompt,
@@ -885,7 +887,7 @@ async def run_orchestrator(
         for tool_block in tool_use_blocks:
             log.info(f"Executing tool: {tool_block.name} with args: {json.dumps(tool_block.input)[:200]}")
 
-            result = _execute_tool(tool_block.name, tool_block.input)
+            result = await asyncio.to_thread(_execute_tool, tool_block.name, tool_block.input)
 
             # Truncate large results to avoid context overflow
             result_str = json.dumps(result, default=str)
