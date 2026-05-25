@@ -208,7 +208,7 @@ def get_llm(provider: str, api_key: str = "", model: Optional[str] = None):
     elif provider in ("claude", "anthropic"):
         from langchain_anthropic import ChatAnthropic
         key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
-        mdl = model or os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
+        mdl = model or os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
         log.info(f"LLM: Anthropic model={mdl}")
         return ChatAnthropic(model=mdl, temperature=0, api_key=key)
     elif provider in ("gemini", "google"):

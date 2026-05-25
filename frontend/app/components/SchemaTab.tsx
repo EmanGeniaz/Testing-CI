@@ -35,7 +35,7 @@ const PROVIDERS = [
   { id: "gemini", label: "Gemini (Google)",    envKey: "GOOGLE_API_KEY",    models: ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"] },
   { id: "groq",   label: "Groq",               envKey: "GROQ_API_KEY",      models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"] },
   { id: "openai", label: "OpenAI",             envKey: "OPENAI_API_KEY",    models: ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"] },
-  { id: "claude", label: "Claude (Anthropic)", envKey: "ANTHROPIC_API_KEY", models: ["claude-3-5-haiku-20241022", "claude-3-5-sonnet-20241022"] },
+  { id: "claude", label: "Claude (Anthropic)", envKey: "ANTHROPIC_API_KEY", models: ["claude-haiku-4-5-20251001", "claude-sonnet-4-6-20250514"] },
 ];
 
 type UseForAI = "Yes" | "No";
