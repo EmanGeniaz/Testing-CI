@@ -234,8 +234,8 @@ body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--ink);
   letter-spacing:.09em; text-transform:uppercase; margin-top:6px; }
 
 /* ── TAB PANELS ──────────────────────────────────────── */
-.tab-panel { display:none; }
-.tab-panel.active { display:block; animation:tabIn .45s cubic-bezier(.22,1,.36,1); }
+.tab-panel { display:block; margin-bottom:60px; }
+.tab-panel .page { max-width:1440px; margin:0 auto; padding:36px 56px 20px; }
 @keyframes tabIn { 0%{opacity:0;transform:translateY(10px);}100%{opacity:1;transform:translateY(0);} }
 .page { max-width:1440px; margin:0 auto; padding:36px 56px 80px; }
 
@@ -1386,29 +1386,38 @@ def _build_js(stats: dict) -> str:
     return f"""
 // ── STATE ────────────────────────────────────────────
 const TABS = [{tab_ids_js}];
-const visited = new Set(['tab1']);
+const visited = new Set(TABS);
 
-// ── PROGRESS ─────────────────────────────────────────
+// ── PROGRESS (always 100% since all sections visible) ──
 function updateProgress() {{
-  document.getElementById('progFill').style.width =
-    (visited.size / TABS.length * 100) + '%';
+  document.getElementById('progFill').style.width = '100%';
 }}
 updateProgress();
 
-// ── TAB SWITCH (define ONCE only) ────────────────────
+// ── SCROLL TO SECTION (replaces tab switching) ──────────
 function switchTab(name) {{
+  const panel = document.querySelector('.tab-panel[data-tab="' + name + '"]');
+  if (panel) {{
+    panel.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+  }}
+  // Highlight active nav tab
   document.querySelectorAll('.tab').forEach(t =>
     t.classList.toggle('active', t.dataset.tab === name));
-  document.querySelectorAll('.tab-panel').forEach(p =>
-    p.classList.toggle('active', p.dataset.tab === name));
-  visited.add(name);
-  updateProgress();
-  window.scrollTo({{ top: 0, behavior: 'smooth' }});
-  setTimeout(initBars, 200);
 }}
-// Wire ONCE
+// Wire nav buttons to scroll
 document.querySelectorAll('.tab').forEach(btn => {{
   btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+}});
+
+// ── SCROLL SPY — highlight nav tab on scroll ────────────
+window.addEventListener('scroll', () => {{
+  let current = TABS[0];
+  TABS.forEach(id => {{
+    const el = document.querySelector('.tab-panel[data-tab="' + id + '"]');
+    if (el && el.getBoundingClientRect().top <= 150) current = id;
+  }});
+  document.querySelectorAll('.tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === current));
 }});
 
 // ── FLIP CARDS ───────────────────────────────────────
@@ -1430,13 +1439,9 @@ function countUp(el, target, dur) {{
 
 // ── INIT BARS (called on every tab switch) ───────────
 function initBars() {{
-  const panel = document.querySelector('.tab-panel.active');
-  if (!panel) return;
-  panel.querySelectorAll('[data-w]').forEach(b => {{ b.style.width = b.dataset.w; }});
-  panel.querySelectorAll('[data-h]').forEach(b => {{ b.style.height = b.dataset.h; }});
-  panel.querySelectorAll('[data-count]').forEach(el => {{
-    if (el.textContent === '0') countUp(el, parseInt(el.dataset.count));
-  }});
+  // All sections visible — init bars everywhere
+  document.querySelectorAll('[data-w]').forEach(b => {{ b.style.width = b.dataset.w; }});
+  document.querySelectorAll('[data-h]').forEach(b => {{ b.style.height = b.dataset.h; }});
 }}
 
 // ── SCROLL REVEAL ─────────────────────────────────────
