@@ -2056,6 +2056,7 @@ from template_library import get_template_library
 from methodology import get_methodology, get_methodology_steps, get_methodology_for_orchestrator
 from skill_memory import save_run_as_skill, get_learned_preferences
 from design_connector import get_design_connector
+from mcp_registry import get_mcp_registry
 
 
 class SkillUploadPayload(BaseModel):
@@ -2240,6 +2241,75 @@ def api_apply_design_theme(payload: ApplyThemePayload):
         html = connector.adjust_color_theme(html, payload.theme)
 
     return {"ok": True, "html_content": html}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MCP CONNECTOR ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class MCPEnablePayload(BaseModel):
+    config: dict = {}
+
+
+@app.get("/mcp/connectors")
+def api_list_mcp_connectors():
+    """List all MCP connectors with their enabled/config status."""
+    registry = get_mcp_registry()
+    return {"connectors": registry.list_connectors()}
+
+
+@app.get("/mcp/connectors/{connector_id}")
+def api_get_mcp_connector(connector_id: str):
+    """Get a specific MCP connector."""
+    registry = get_mcp_registry()
+    try:
+        return registry.get_connector(connector_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/mcp/connectors/{connector_id}/enable")
+def api_enable_mcp_connector(connector_id: str, payload: MCPEnablePayload):
+    """Enable an MCP connector with the provided configuration."""
+    registry = get_mcp_registry()
+    try:
+        connector = registry.enable_connector(connector_id, payload.config)
+        return {"ok": True, "connector": connector}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/mcp/connectors/{connector_id}/disable")
+def api_disable_mcp_connector(connector_id: str):
+    """Disable an MCP connector."""
+    registry = get_mcp_registry()
+    try:
+        connector = registry.disable_connector(connector_id)
+        return {"ok": True, "connector": connector}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/mcp/connectors/{connector_id}/test")
+def api_test_mcp_connector(connector_id: str):
+    """Test an MCP connector's credentials."""
+    registry = get_mcp_registry()
+    try:
+        return registry.test_connector(connector_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/mcp/active")
+def api_list_active_mcp_connectors():
+    """List only active (enabled) MCP connectors."""
+    registry = get_mcp_registry()
+    return {"connectors": registry.get_active_connectors()}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

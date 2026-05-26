@@ -728,6 +728,21 @@ def _build_system_prompt(session_id: str, user_prompt: str) -> str:
     except Exception:
         templates_text = "No templates available."
 
+    # Load active MCP connectors
+    try:
+        from mcp_registry import get_mcp_registry
+        mcp_registry = get_mcp_registry()
+        active_connectors = mcp_registry.get_active_connectors()
+        if active_connectors:
+            connectors_text = "\n".join(
+                f"  - {c['name']} ({c['category']}): enabled"
+                for c in active_connectors
+            )
+        else:
+            connectors_text = "  No external connectors are currently enabled."
+    except Exception:
+        connectors_text = "  Connector registry not available."
+
     # Load session data summary
     try:
         m = _get_main()
@@ -757,6 +772,11 @@ the result, then THINK again about what to do next.
 
 ## Available Report Templates
 {templates_text}
+
+## Active Connectors
+The following external tools are connected and available:
+{connectors_text}
+You can reference these when deciding how to acquire data or generate design assets.
 
 ## Current Session Data
 {data_summary}

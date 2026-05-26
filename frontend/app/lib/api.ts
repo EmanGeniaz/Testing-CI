@@ -242,6 +242,66 @@ export async function getLearnedPreferences(): Promise<{
   return apiFetch(`${BASE}/skills/learned-preferences`);
 }
 
+// ── MCP Connectors ────────────────────────────────────────────────────────
+
+export interface MCPConfigField {
+  key: string;
+  label: string;
+  type: "text" | "password";
+  required: boolean;
+  placeholder?: string;
+}
+
+export interface MCPConnector {
+  id: string;
+  name: string;
+  category: string;
+  icon: string;
+  description: string;
+  status: "available" | "coming_soon" | "active";
+  requires: string[];
+  config_fields: MCPConfigField[];
+  enabled: boolean;
+  user_config: Record<string, string>;
+  always_enabled?: boolean;
+}
+
+export async function listMCPConnectors(): Promise<{ connectors: MCPConnector[] }> {
+  return apiFetch(`${BASE}/mcp/connectors`);
+}
+
+export async function getMCPConnector(id: string): Promise<MCPConnector> {
+  return apiFetch(`${BASE}/mcp/connectors/${id}`);
+}
+
+export async function enableMCPConnector(id: string, config: Record<string, string>): Promise<{ ok: boolean; connector: MCPConnector }> {
+  return apiFetch(`${BASE}/mcp/connectors/${id}/enable`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ config }),
+  });
+}
+
+export async function disableMCPConnector(id: string): Promise<{ ok: boolean; connector: MCPConnector }> {
+  return apiFetch(`${BASE}/mcp/connectors/${id}/disable`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+export async function testMCPConnector(id: string): Promise<{ connector_id: string; success: boolean; message: string }> {
+  return apiFetch(`${BASE}/mcp/connectors/${id}/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+export async function getActiveMCPConnectors(): Promise<{ connectors: MCPConnector[] }> {
+  return apiFetch(`${BASE}/mcp/active`);
+}
+
 // ── Design Connector ───────────────────────────────────────────────────────
 
 export interface DesignTool {
