@@ -132,10 +132,27 @@ def _collect_stats(tagged_data: list[dict]) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _CSS = r"""
-:root{--purple:#5B2EFF;--magenta:#FF4D8D;--grad:linear-gradient(135deg,#5B2EFF 0%,#FF4D8D 100%);--grad-soft:linear-gradient(135deg,rgba(91,46,255,0.08) 0%,rgba(255,77,141,0.08) 100%);--panel:#F7F7FA;--text:#1A1A2E;--text-mid:#4A4A6A;--text-soft:#8888AA;--border:#EDEDF5;--shadow:0 2px 16px rgba(91,46,255,0.07);--shadow-hover:0 8px 32px rgba(91,46,255,0.18);--radius:16px;--radius-sm:10px;}
+:root{--purple:#5B2EFF;--magenta:#FF4D8D;--grad:linear-gradient(135deg,#5B2EFF 0%,#FF4D8D 100%);--grad-soft:linear-gradient(135deg,rgba(91,46,255,0.08) 0%,rgba(255,77,141,0.08) 100%);--panel:#F7F7FA;--text:#1A1A2E;--text-mid:#4A4A6A;--text-soft:#8888AA;--border:#EDEDF5;--shadow:0 2px 16px rgba(91,46,255,0.07);--shadow-hover:0 8px 32px rgba(91,46,255,0.18);--nav-w:240px;--radius:16px;--radius-sm:10px;}
 *{margin:0;padding:0;box-sizing:border-box;}
-body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--panel);color:var(--text);min-height:100vh;}
-.main{min-height:100vh;}
+body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--panel);color:var(--text);min-height:100vh;display:flex;}
+
+/* SIDEBAR */
+.sidebar{width:var(--nav-w);min-height:100vh;background:#fff;border-right:1px solid var(--border);position:fixed;top:0;left:0;display:flex;flex-direction:column;z-index:100;box-shadow:2px 0 24px rgba(91,46,255,0.06);}
+.logo{padding:24px 20px 20px;border-bottom:1px solid var(--border);}
+.logo-mark{font-family:'Sora',sans-serif;font-size:15px;font-weight:800;background:var(--grad);-webkit-background-clip:text;-webkit-text-fill-color:transparent;}
+.logo-sub{font-size:10px;color:var(--text-soft);letter-spacing:0.08em;text-transform:uppercase;margin-top:2px;}
+.nav-section{padding:16px 12px 8px;}
+.nav-label{font-size:9.5px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-soft);padding:0 8px 8px;}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;cursor:pointer;transition:all 0.18s;font-size:13px;font-weight:500;color:var(--text-mid);margin-bottom:2px;text-decoration:none;}
+.nav-item:hover{background:var(--grad-soft);color:var(--purple);}
+.nav-item.active{background:var(--grad);color:#fff;box-shadow:0 4px 14px rgba(91,46,255,0.3);}
+.nav-icon{font-size:15px;width:18px;text-align:center;}
+.nav-badge{margin-left:auto;background:var(--grad);color:#fff;font-size:9px;font-weight:700;padding:2px 6px;border-radius:20px;}
+.nav-item.active .nav-badge{background:rgba(255,255,255,0.3);}
+.sidebar-footer{margin-top:auto;padding:16px;border-top:1px solid var(--border);font-size:11px;color:var(--text-soft);line-height:1.5;}
+.sidebar-footer strong{color:var(--text-mid);}
+
+.main{margin-left:var(--nav-w);flex:1;min-height:100vh;}
 .topbar{background:#fff;border-bottom:1px solid var(--border);padding:0 32px;height:64px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:90;}
 .page-title{font-family:'Sora',sans-serif;font-size:16px;font-weight:700;color:var(--text);letter-spacing:-0.3px;}
 .page-sub{font-size:11px;color:var(--text-soft);margin-top:1px;}
@@ -249,8 +266,26 @@ body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--panel);color:va
 .alert-box strong{color:var(--magenta);}
 .info-box{padding:10px 14px;background:var(--panel);border-radius:10px;font-size:11.5px;color:var(--text-mid);line-height:1.6;margin-top:14px;}
 .info-box strong{color:var(--purple);}
+.insight-btn{font-size:10px;font-weight:700;padding:4px 10px;border-radius:20px;background:var(--grad-soft);color:var(--purple);border:1px solid rgba(91,46,255,0.15);cursor:pointer;transition:all 0.18s;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;}
+.insight-btn:hover{background:var(--grad);color:#fff;border-color:transparent;}
 .section{padding-bottom:32px;}
 .section-gap{padding:28px 0 32px;}
+
+/* Modal */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:200;justify-content:center;align-items:center;backdrop-filter:blur(4px);}
+.modal-overlay.active{display:flex;}
+.modal{background:#fff;border-radius:var(--radius);max-width:600px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 24px 64px rgba(91,46,255,0.2);padding:32px;position:relative;animation:modalIn 0.3s ease-out;}
+@keyframes modalIn{from{opacity:0;transform:translateY(20px);}to{opacity:1;transform:translateY(0);}}
+.modal-close{position:absolute;top:16px;right:16px;width:32px;height:32px;border-radius:8px;border:none;background:var(--panel);cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center;color:var(--text-mid);transition:all 0.15s;}
+.modal-close:hover{background:var(--grad);color:#fff;}
+.modal-title{font-family:'Sora',sans-serif;font-size:18px;font-weight:700;margin-bottom:6px;}
+.modal-sub{font-size:12px;color:var(--text-soft);margin-bottom:18px;}
+.modal p{font-size:13px;color:var(--text-mid);line-height:1.7;margin-bottom:12px;}
+
+@media (max-width:900px){
+  .sidebar{display:none;}
+  .main{margin-left:0;}
+}
 
 /* Print friendly */
 @media print{
@@ -446,7 +481,7 @@ def _build_platform_section(stats: dict) -> str:
       )}
       <div class="grid-2">
         <div class="card">
-          <div class="card-title">Platform Distribution (n={valid})</div>
+          <div class="card-title">Platform Distribution (n={valid})<button class="insight-btn" onclick="openModal('Platform Insights','AI-generated analysis','<p>Conversations span <strong>{len(stats['platforms'])} platforms</strong>. The dominant platform accounts for {_pct(top_plat_count, valid)} of all posts, suggesting concentrated engagement. Tailor platform-specific strategies for maximum reach.</p>')">✦ AI Insights</button></div>
           <div class="card-sub">Posts by source platform</div>
           {_build_bar_chart(plat_items, valid, soft=True)}
         </div>
@@ -475,7 +510,7 @@ def _build_themes_section(stats: dict, verbatims: list[dict]) -> str:
       )}
       <div class="grid-5-3">
         <div class="card">
-          <div class="card-title">Theme Distribution</div>
+          <div class="card-title">Theme Distribution<button class="insight-btn" onclick="openModal('Theme Insights','AI-generated analysis','<p>The top theme dominates with <strong>{_pct(theme_items[0][1] if theme_items else 0, valid)}</strong> of coded posts. This concentration suggests a primary narrative that should be addressed in brand strategy and medical communications.</p>')">✦ AI Insights</button></div>
           <div class="card-sub">Horizontal bar chart of top themes with counts and percentages</div>
           {_build_bar_chart(theme_items, valid, wide=True)}
         </div>
@@ -834,6 +869,30 @@ def build_pharma_html_report(tagged_data: list[dict], metadata: dict) -> str:
 </head>
 <body>
 
+<!-- SIDEBAR NAV -->
+<aside class="sidebar">
+  <div class="logo">
+    <div class="logo-mark">InfoVision</div>
+    <div class="logo-sub">Consumer Intelligence</div>
+  </div>
+  <div class="nav-section">
+    <div class="nav-label">Report Sections</div>
+    <a href="#overview" class="nav-item active" onclick="setActive(this)"><span class="nav-icon">📊</span>Overview</a>
+    <a href="#platforms" class="nav-item" onclick="setActive(this)"><span class="nav-icon">📡</span>Platforms<span class="nav-badge">{len(stats['platforms'])}</span></a>
+    <a href="#themes" class="nav-item" onclick="setActive(this)"><span class="nav-icon">🏷️</span>Themes<span class="nav-badge">{len(stats['themes'])}</span></a>
+    <a href="#journey" class="nav-item" onclick="setActive(this)"><span class="nav-icon">🗺️</span>Patient Journey</a>
+    <a href="#unmet" class="nav-item" onclick="setActive(this)"><span class="nav-icon">💊</span>Unmet Needs<span class="nav-badge">{len(stats['unmet_needs'])}</span></a>
+    <a href="#concerns" class="nav-item" onclick="setActive(this)"><span class="nav-icon">⚠️</span>Concerns<span class="nav-badge">{len(stats['concerns'])}</span></a>
+    <a href="#qol" class="nav-item" onclick="setActive(this)"><span class="nav-icon">❤️</span>Quality of Life</a>
+    <a href="#strategy" class="nav-item" onclick="setActive(this)"><span class="nav-icon">🎯</span>Implications</a>
+  </div>
+  <div class="sidebar-footer">
+    <strong>AI-Generated Report</strong><br>
+    {stats['valid']} posts · {len(stats['platforms'])} platforms<br>
+    Pharma Social Intelligence
+  </div>
+</aside>
+
 <main class="main">
   <div class="topbar">
     <div>
@@ -876,6 +935,76 @@ def build_pharma_html_report(tagged_data: list[dict], metadata: dict) -> str:
 
   </div></div>
 </main>
+
+<!-- MODAL CONTAINER -->
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal()">&times;</button>
+    <div class="modal-title" id="modalTitle"></div>
+    <div class="modal-sub" id="modalSub"></div>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script>
+// Smooth scrolling for sidebar nav
+document.querySelectorAll('.nav-item').forEach(link => {{
+  link.addEventListener('click', function(e) {{
+    const href = this.getAttribute('href');
+    if (href && href.startsWith('#')) {{
+      e.preventDefault();
+      const target = document.getElementById(href.slice(1));
+      if (target) target.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+    }}
+  }});
+}});
+
+function setActive(el) {{
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  el.classList.add('active');
+}}
+
+// Highlight active nav on scroll
+const sections = document.querySelectorAll('.section, .section-gap');
+const navItems = document.querySelectorAll('.sidebar .nav-item');
+window.addEventListener('scroll', () => {{
+  let current = '';
+  sections.forEach(sec => {{
+    if (sec.offsetTop - 200 <= window.scrollY) current = sec.id;
+  }});
+  navItems.forEach(item => {{
+    item.classList.remove('active');
+    if (item.getAttribute('href') === '#' + current) item.classList.add('active');
+  }});
+}});
+
+// Modal
+function openModal(title, sub, body) {{
+  document.getElementById('modalTitle').textContent = title;
+  document.getElementById('modalSub').textContent = sub;
+  document.getElementById('modalBody').innerHTML = body;
+  document.getElementById('modalOverlay').classList.add('active');
+}}
+function closeModal() {{
+  document.getElementById('modalOverlay').classList.remove('active');
+}}
+document.addEventListener('keydown', e => {{ if (e.key === 'Escape') closeModal(); }});
+
+// Animate bars on scroll
+const observer = new IntersectionObserver(entries => {{
+  entries.forEach(entry => {{
+    if (entry.isIntersecting) {{
+      entry.target.querySelectorAll('.bar-fill, .progress-fill').forEach(bar => {{
+        const w = bar.style.width;
+        bar.style.width = '0%';
+        requestAnimationFrame(() => {{ bar.style.width = w; }});
+      }});
+      observer.unobserve(entry.target);
+    }}
+  }});
+}}, {{ threshold: 0.2 }});
+document.querySelectorAll('.card').forEach(card => observer.observe(card));
+</script>
 
 </body>
 </html>"""
