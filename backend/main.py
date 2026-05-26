@@ -604,6 +604,14 @@ def _run_tagging_bg(session_id: str, provider: str, api_key: str,
         save_runs(runs)
         log.info(f"=== RUN {run_id} COMPLETE | {completed}/{total} rows in {elapsed:.1f}s ===")
 
+        # ── Auto-learn: save successful run as skill if novel ────────────
+        try:
+            skill_result = save_run_as_skill(session_id, run_meta)
+            if skill_result:
+                log.info(f"Auto-learned skill from run {run_id}: {skill_result.get('id')}")
+        except Exception as learn_err:
+            log.warning(f"Skill auto-learning failed (non-fatal): {learn_err}")
+
     except Exception as e:
         log.error(f"=== RUN {run_id} FAILED: {e}\n{traceback.format_exc()} ===")
         update_session(session_id, {"status": "error", "error_message": str(e)})
@@ -1931,6 +1939,10 @@ def refine_report(session_id: str, payload: RefineReportPayload):
             current_report["metadata"]["refine_note"] = "No LLM API key configured — report unchanged"
         return current_report
 
+    # Persist the design theme to the session for export
+    if payload.design_theme and payload.design_theme != "default":
+        update_session(session_id, {"design_theme": payload.design_theme})
+
     log.info(f"Refining report for session {session_id} via {provider_name}: feedback={payload.feedback[:100]}...")
 
     current_report_json = json.dumps(current_report, indent=2, default=str)
@@ -2021,6 +2033,12 @@ async def export_html_report(session_id: str):
 
     html = build_pharma_html_report(analyzed_data, metadata)
 
+    # Apply design theme if one was set during refinement
+    design_theme = session.get("design_theme", "default")
+    if design_theme and design_theme != "default":
+        connector = get_design_connector()
+        html = connector.adjust_color_theme(html, design_theme)
+
     fname = session.get("filename", "report").rsplit(".", 1)[0]
     return StreamingResponse(
         iter([html.encode("utf-8")]),
@@ -2036,6 +2054,8 @@ async def export_html_report(session_id: str):
 from skill_registry import get_skill_registry
 from template_library import get_template_library
 from methodology import get_methodology, get_methodology_steps, get_methodology_for_orchestrator
+from skill_memory import save_run_as_skill, get_learned_preferences
+from design_connector import get_design_connector
 
 
 class SkillUploadPayload(BaseModel):
@@ -2151,6 +2171,75 @@ def api_get_methodology():
 @app.get("/methodology/steps")
 def api_get_methodology_steps():
     return {"steps": get_methodology_steps()}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SKILL MEMORY ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class LearnFromRunPayload(BaseModel):
+    session_id: str
+
+
+@app.post("/skills/learn-from-run")
+def api_learn_from_run(payload: LearnFromRunPayload):
+    """After a successful run, extract configuration and save as a reusable skill."""
+    session = get_session(payload.session_id)
+
+    run_metadata = {
+        "status": session.get("status", ""),
+        "report_type": session.get("report_type", ""),
+        "context": session.get("dataset_context", {}),
+        "custom_schema": session.get("custom_schema"),
+        "provider": session.get("provider", ""),
+        "columns": session.get("columns", []),
+        "schema_config": session.get("schema_config", {}),
+    }
+
+    result = save_run_as_skill(payload.session_id, run_metadata)
+    if result:
+        return {"ok": True, "learned": True, "skill": result}
+    return {"ok": True, "learned": False, "message": "Run was not novel enough to save as a skill"}
+
+
+@app.get("/skills/learned-preferences")
+def api_get_learned_preferences():
+    """Return accumulated preferences from past runs."""
+    return get_learned_preferences()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DESIGN CONNECTOR ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ApplyThemePayload(BaseModel):
+    html_content: str
+    theme: str = "corporate_blue"
+    brand_config: Optional[dict] = None
+
+
+@app.get("/design/tools")
+def api_list_design_tools():
+    """List available design tools and their capabilities."""
+    connector = get_design_connector()
+    return {"tools": connector.list_tools()}
+
+
+@app.post("/design/apply-theme")
+def api_apply_design_theme(payload: ApplyThemePayload):
+    """Apply a brand theme to HTML content."""
+    connector = get_design_connector()
+
+    html = payload.html_content
+
+    if payload.brand_config:
+        html = connector.apply_brand_theme(html, payload.brand_config)
+    elif payload.theme and payload.theme != "default":
+        html = connector.adjust_color_theme(html, payload.theme)
+
+    return {"ok": True, "html_content": html}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

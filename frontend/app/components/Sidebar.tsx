@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import { listSkills, uploadSkill, type SkillInfo } from "../lib/api";
+import { listSkills, uploadSkill, getMethodologySteps, getLearnedPreferences, type SkillInfo } from "../lib/api";
 
 type View = "studio" | "workbench" | "export" | "history";
 
@@ -34,6 +34,12 @@ export default function Sidebar({ activeView, onViewChange, sessionId }: Sidebar
   const [skillsLoading, setSkillsLoading] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Knowledge section state
+  const [methodologyCount, setMethodologyCount] = useState<number>(0);
+  const [memoryCount, setMemoryCount] = useState<number>(0);
+  const [knowledgeModal, setKnowledgeModal] = useState<"methodology" | "memory" | null>(null);
+  const [methodologySteps, setMethodologySteps] = useState<Array<{ id: number; name: string; description: string; agent_action: string }>>([]);
+
   const fetchSkills = useCallback(async () => {
     try {
       const data = await listSkills();
@@ -49,6 +55,19 @@ export default function Sidebar({ activeView, onViewChange, sessionId }: Sidebar
   useEffect(() => {
     fetchSkills();
   }, [fetchSkills]);
+
+  // Fetch methodology step count and memory count
+  useEffect(() => {
+    getMethodologySteps()
+      .then(res => {
+        setMethodologyCount(res.steps.length);
+        setMethodologySteps(res.steps);
+      })
+      .catch(() => {});
+    getLearnedPreferences()
+      .then(res => { setMemoryCount(res.total_runs); })
+      .catch(() => {});
+  }, []);
 
   const handleSkillUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -158,15 +177,92 @@ export default function Sidebar({ activeView, onViewChange, sessionId }: Sidebar
         <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-2 px-[22px] pb-2 font-medium">
           Knowledge
         </div>
-        {["Methodology", "Memory"].map(item => (
-          <div key={item} className="py-1.5 px-[22px] text-[13px] text-ink-3 flex items-center gap-[11px] cursor-pointer hover:text-ink transition-colors">
-            <svg className="w-[14px] h-[14px] opacity-60" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
-              <path d="M2 4h12 M2 8h12 M2 12h12"/>
-            </svg>
-            {item}
-          </div>
-        ))}
+        <button
+          onClick={() => setKnowledgeModal("methodology")}
+          className="w-full py-1.5 px-[22px] text-[13px] text-ink-3 flex items-center gap-[11px] cursor-pointer hover:text-ink transition-colors text-left"
+        >
+          <svg className="w-[14px] h-[14px] opacity-60" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+            <path d="M2 4h12 M2 8h12 M2 12h12"/>
+          </svg>
+          Methodology
+          {methodologyCount > 0 && (
+            <span className="ml-auto font-mono text-[9px] px-1.5 py-0.5 bg-purple-soft text-purple rounded font-medium">
+              {methodologyCount} steps
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => setKnowledgeModal("memory")}
+          className="w-full py-1.5 px-[22px] text-[13px] text-ink-3 flex items-center gap-[11px] cursor-pointer hover:text-ink transition-colors text-left"
+        >
+          <svg className="w-[14px] h-[14px] opacity-60" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4">
+            <path d="M2 4h12 M2 8h12 M2 12h12"/>
+          </svg>
+          Memory
+          <span className="ml-auto font-mono text-[9px] px-1.5 py-0.5 bg-paper-2 text-muted rounded font-medium">
+            {memoryCount > 0 ? `${memoryCount} learned` : "0 learned"}
+          </span>
+        </button>
       </div>
+
+      {/* Knowledge modal */}
+      {knowledgeModal && (
+        <div
+          className="fixed inset-0 bg-black/30 backdrop-blur-[4px] z-50 flex items-center justify-center"
+          onClick={() => setKnowledgeModal(null)}
+        >
+          <div
+            className="bg-white rounded-[14px] border border-rule shadow-[0_12px_40px_rgba(20,19,42,0.15)] max-w-[560px] w-full mx-4 max-h-[70vh] overflow-y-auto"
+            onClick={e => e.stopPropagation()}
+            style={{ animation: "fadeUp 0.25s ease-out both" }}
+          >
+            <div className="px-6 pt-6 pb-4 border-b border-rule flex items-center justify-between">
+              <h3 className="text-[18px] font-medium text-ink tracking-[-0.01em]" style={{ fontFamily: "var(--font-display)" }}>
+                {knowledgeModal === "methodology" ? "Research Methodology" : "Agent Memory"}
+              </h3>
+              <button
+                onClick={() => setKnowledgeModal(null)}
+                className="w-7 h-7 rounded-full flex items-center justify-center text-muted hover:text-ink hover:bg-paper-2 transition-colors"
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2 2l8 8M10 2l-8 8" /></svg>
+              </button>
+            </div>
+            <div className="p-6">
+              {knowledgeModal === "methodology" ? (
+                <div className="space-y-3">
+                  {methodologySteps.map(step => (
+                    <div key={step.id} className="flex gap-3">
+                      <div className="w-6 h-6 rounded-full bg-gradient-to-r from-purple to-pink text-white text-[10px] font-mono font-bold flex items-center justify-center shrink-0 mt-0.5">
+                        {step.id}
+                      </div>
+                      <div>
+                        <div className="text-[13px] font-medium text-ink">{step.name}</div>
+                        <div className="text-[12px] text-muted leading-[1.5] mt-0.5">{step.description.slice(0, 150)}{step.description.length > 150 ? "..." : ""}</div>
+                        <div className="font-mono text-[9px] text-purple uppercase tracking-[0.08em] mt-1">{step.agent_action}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <div className="text-[36px] mb-2" style={{ fontFamily: "var(--font-display)" }}>
+                    {memoryCount > 0 ? memoryCount : 0}
+                  </div>
+                  <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted mb-4">
+                    Preferences learned from past runs
+                  </div>
+                  <p className="text-[13px] text-muted leading-[1.5] max-w-[360px] mx-auto">
+                    {memoryCount > 0
+                      ? "The agent remembers your preferences from past runs and uses them to improve future analyses."
+                      : "As you run analyses, the agent will learn your preferences for report types, design themes, and refinement patterns."
+                    }
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <div className="mt-auto pt-[18px] px-[22px] border-t border-rule flex items-center gap-[11px]">

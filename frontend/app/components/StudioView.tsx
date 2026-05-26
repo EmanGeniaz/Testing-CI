@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { uploadFile, setContext, setSchema, runTagging, getReportTypes, getStatus, getResults, refineReport, type ReportTypeInfo } from "../lib/api";
+import { uploadFile, setContext, setSchema, runTagging, getReportTypes, getStatus, getResults, refineReport, listTemplates, type ReportTypeInfo, type TemplateInfo } from "../lib/api";
 
 interface StudioViewProps {
   onSessionReady: (sid: string, filename: string, cols: string[], rowCount: number) => void;
@@ -127,6 +127,10 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
   const [refineDesignTheme, setRefineDesignTheme] = useState("default");
   const [refining, setRefining] = useState(false);
 
+  // Template selection state
+  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+
   // Tooltip state for coming-soon sources
   const [hoveredSource, setHoveredSource] = useState<string | null>(null);
 
@@ -135,6 +139,9 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
   useEffect(() => {
     getReportTypes()
       .then(res => { setReportTypes(res.report_types); setReportType(res.default); })
+      .catch(() => {});
+    listTemplates()
+      .then(res => { setTemplates(res.templates); })
       .catch(() => {});
   }, []);
 
@@ -186,11 +193,16 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
       ? "Custom Agent"
       : AGENTS.find(a => a.id === selectedAgent)?.name || selectedAgent || "";
 
+    const templateHint = selectedTemplateId
+      ? `Use template: ${selectedTemplateId}`
+      : "";
+
     const userPrompt = [
       contextBrief,
       customAgentPrompt,
       prompt,
       selectedAgent && selectedAgent !== "custom" ? `Use the ${agentLabel} skill.` : "",
+      templateHint,
     ].filter(Boolean).join("\n\n");
 
     onSessionReady(sessionId, file?.name || "dataset", columns, rowCount);
@@ -703,6 +715,104 @@ export default function StudioView({ onSessionReady, onViewReport, sessionId: ex
             />
           </div>
         </div>
+
+        {/* Template Selection */}
+        {templates.length > 0 && (
+          <div className="mt-8 mb-6">
+            <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted font-medium mb-3 flex items-center gap-2">
+              <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                <path d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zm0 8a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zm10-1h6v3h-6v-3z" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Report Template
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              {/* Auto-select card */}
+              <button
+                onClick={() => setSelectedTemplateId(null)}
+                className="relative text-left bg-white border rounded-[10px] p-4 transition-all cursor-pointer group"
+                style={{
+                  borderColor: selectedTemplateId === null ? "var(--color-purple)" : "var(--color-rule)",
+                  borderLeftWidth: selectedTemplateId === null ? "3px" : "1px",
+                  borderImage: selectedTemplateId === null ? "linear-gradient(180deg, var(--color-purple), var(--color-pink)) 1" : "none",
+                  boxShadow: selectedTemplateId === null
+                    ? "0 4px 16px rgba(108, 76, 255, 0.12)"
+                    : "0 1px 2px rgba(20, 19, 42, 0.04)",
+                }}
+              >
+                <div className="flex items-start gap-3">
+                  <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-[11px] font-mono font-bold shrink-0"
+                    style={{ background: "linear-gradient(135deg, #6c4cff 0%, #ff4d8d 100%)" }}>
+                    AI
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[14px] font-medium text-ink mb-0.5 tracking-[-0.01em]" style={{ fontFamily: "var(--font-display)" }}>
+                      Auto-select
+                    </div>
+                    <div className="text-[12px] text-muted leading-[1.4]">
+                      Agent picks the best template
+                    </div>
+                  </div>
+                  {selectedTemplateId === null && (
+                    <div className="ml-auto shrink-0 w-5 h-5 rounded-full bg-gradient-to-r from-purple to-pink flex items-center justify-center">
+                      <svg width="10" height="10" fill="none" stroke="white" strokeWidth="2.5" viewBox="0 0 12 12"><path d="M2.5 6.5L5 9l4.5-6" /></svg>
+                    </div>
+                  )}
+                </div>
+              </button>
+
+              {/* Template cards */}
+              {templates.map(tpl => (
+                <button
+                  key={tpl.id}
+                  onClick={() => setSelectedTemplateId(tpl.id)}
+                  className="relative text-left bg-white border rounded-[10px] p-4 transition-all cursor-pointer group"
+                  style={{
+                    borderColor: selectedTemplateId === tpl.id ? "var(--color-purple)" : "var(--color-rule)",
+                    borderLeftWidth: selectedTemplateId === tpl.id ? "3px" : "1px",
+                    borderImage: selectedTemplateId === tpl.id ? "linear-gradient(180deg, var(--color-purple), var(--color-pink)) 1" : "none",
+                    boxShadow: selectedTemplateId === tpl.id
+                      ? "0 4px 16px rgba(108, 76, 255, 0.12)"
+                      : "0 1px 2px rgba(20, 19, 42, 0.04)",
+                  }}
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-full flex items-center justify-center text-[11px] font-mono font-bold shrink-0"
+                      style={{
+                        background: tpl.builtin
+                          ? "linear-gradient(135deg, #4d8cff 0%, #99bfff 100%)"
+                          : "linear-gradient(135deg, #18a957 0%, #60e090 100%)",
+                        color: "white",
+                      }}>
+                      {tpl.name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[14px] font-medium text-ink mb-0.5 tracking-[-0.01em]" style={{ fontFamily: "var(--font-display)" }}>
+                        {tpl.name}
+                      </div>
+                      <div className="text-[12px] text-muted leading-[1.4] line-clamp-2">
+                        {tpl.description}
+                      </div>
+                      {tpl.tags && tpl.tags.length > 0 && (
+                        <div className="flex gap-1 flex-wrap mt-2">
+                          {tpl.tags.slice(0, 3).map(tag => (
+                            <span key={tag} className="font-mono text-[9px] lowercase px-[6px] py-[2px] rounded bg-paper-2 text-muted">
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {selectedTemplateId === tpl.id && (
+                      <div className="ml-auto shrink-0 w-5 h-5 rounded-full bg-gradient-to-r from-purple to-pink flex items-center justify-center">
+                        <svg width="10" height="10" fill="none" stroke="white" strokeWidth="2.5" viewBox="0 0 12 12"><path d="M2.5 6.5L5 9l4.5-6" /></svg>
+                      </div>
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="text-[12px] text-pink bg-pink-soft border border-pink/20 px-3 py-2 rounded-lg mb-4">{error}</div>

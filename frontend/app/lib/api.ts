@@ -218,3 +218,51 @@ export async function getMethodology(): Promise<Record<string, unknown>> {
 export async function getMethodologySteps(): Promise<{ steps: Array<{ id: number; name: string; description: string; agent_action: string }> }> {
   return apiFetch(`${BASE}/methodology/steps`);
 }
+
+// ── Skill Memory ───────────────────────────────────────────────────────────
+
+export async function learnFromRun(sessionId: string): Promise<{ ok: boolean; learned: boolean; skill?: SkillInfo; message?: string }> {
+  return apiFetch(`${BASE}/skills/learn-from-run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+}
+
+export async function getLearnedPreferences(): Promise<{
+  total_runs: number;
+  preferred_report_type: string | null;
+  preferred_provider: string | null;
+  preferred_design_theme: string | null;
+  report_type_counts: Record<string, number>;
+  provider_counts: Record<string, number>;
+  design_theme_counts: Record<string, number>;
+  refinement_feedback_count: number;
+}> {
+  return apiFetch(`${BASE}/skills/learned-preferences`);
+}
+
+// ── Design Connector ───────────────────────────────────────────────────────
+
+export interface DesignTool {
+  id: string;
+  name: string;
+  status: string;
+  capabilities: string[];
+}
+
+export async function listDesignTools(): Promise<{ tools: DesignTool[] }> {
+  return apiFetch(`${BASE}/design/tools`);
+}
+
+export async function applyDesignTheme(payload: {
+  html_content: string;
+  theme?: string;
+  brand_config?: Record<string, string>;
+}): Promise<{ ok: boolean; html_content: string }> {
+  return apiFetch(`${BASE}/design/apply-theme`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}

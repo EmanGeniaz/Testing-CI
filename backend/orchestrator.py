@@ -922,6 +922,21 @@ async def run_orchestrator(
                     "summary": final_text.strip(),
                     "iterations": iteration,
                 }) + "\n"
+
+                # Auto-learn from successful run
+                try:
+                    from skill_memory import save_run_as_skill
+                    run_meta = {
+                        "status": session.get("status", "complete"),
+                        "report_type": session.get("report_type", ""),
+                        "context": session.get("dataset_context", {}),
+                        "custom_schema": session.get("custom_schema"),
+                        "provider": "anthropic",
+                    }
+                    save_run_as_skill(session_id, run_meta)
+                except Exception as learn_err:
+                    log.warning(f"Skill auto-learning from orchestrator failed (non-fatal): {learn_err}")
+
             except Exception as e:
                 log.warning(f"Could not extract final report: {e}")
                 final_text = ""
