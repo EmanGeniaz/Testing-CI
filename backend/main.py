@@ -2030,6 +2030,130 @@ async def export_html_report(session_id: str):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  SKILL REGISTRY ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from skill_registry import get_skill_registry
+from template_library import get_template_library
+from methodology import get_methodology, get_methodology_steps, get_methodology_for_orchestrator
+
+
+class SkillUploadPayload(BaseModel):
+    id: Optional[str] = None
+    name: str
+    description: str = ""
+    trigger_words: List[str] = []
+    type: str = "uploaded"
+
+
+class SkillMatchPayload(BaseModel):
+    prompt: str
+
+
+@app.get("/skills")
+def api_list_skills():
+    registry = get_skill_registry()
+    return {"skills": registry.list_skills()}
+
+
+@app.get("/skills/{skill_id}")
+def api_get_skill(skill_id: str):
+    registry = get_skill_registry()
+    try:
+        return registry.get_skill(skill_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/skills/upload")
+def api_upload_skill(payload: SkillUploadPayload):
+    registry = get_skill_registry()
+    try:
+        skill = registry.upload_skill(payload.model_dump(exclude_none=True))
+        return {"ok": True, "skill": skill}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/skills/{skill_id}")
+def api_delete_skill(skill_id: str):
+    registry = get_skill_registry()
+    try:
+        deleted = registry.delete_skill(skill_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Skill '{skill_id}' not found.")
+        return {"ok": True, "deleted": skill_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/skills/match")
+def api_match_skills(payload: SkillMatchPayload):
+    registry = get_skill_registry()
+    matched = registry.match_skill(payload.prompt)
+    return {"matches": matched}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TEMPLATE LIBRARY ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TemplateUploadPayload(BaseModel):
+    name: str
+    html_content: str
+    description: str = ""
+    report_types: List[str] = []
+    tags: List[str] = []
+
+
+@app.get("/templates")
+def api_list_templates():
+    library = get_template_library()
+    return {"templates": library.list_templates()}
+
+
+@app.get("/templates/{template_id}")
+def api_get_template(template_id: str):
+    library = get_template_library()
+    try:
+        return library.get_template(template_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/templates/upload")
+def api_upload_template(payload: TemplateUploadPayload):
+    library = get_template_library()
+    try:
+        meta = library.upload_template(
+            name=payload.name,
+            html_content=payload.html_content,
+            metadata={
+                "description": payload.description,
+                "report_types": payload.report_types,
+                "tags": payload.tags,
+            },
+        )
+        return {"ok": True, "template": meta}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  METHODOLOGY ENDPOINTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/methodology")
+def api_get_methodology():
+    return get_methodology()
+
+
+@app.get("/methodology/steps")
+def api_get_methodology_steps():
+    return {"steps": get_methodology_steps()}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  AGENTIC ORCHESTRATOR ROUTER
 # ═══════════════════════════════════════════════════════════════════════════════
 

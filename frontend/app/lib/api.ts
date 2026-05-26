@@ -132,3 +132,89 @@ export async function refineReport(session_id: string, feedback: string, design_
     body: JSON.stringify({ feedback, design_theme }),
   });
 }
+
+// ── Skill Registry ──────────────────────────────────────────────────────────
+
+export interface SkillInfo {
+  id: string;
+  name: string;
+  description: string;
+  type: string;
+  builtin: boolean;
+  trigger_words?: string[];
+}
+
+export async function listSkills(): Promise<{ skills: SkillInfo[] }> {
+  return apiFetch(`${BASE}/skills`);
+}
+
+export async function getSkill(skillId: string): Promise<SkillInfo> {
+  return apiFetch(`${BASE}/skills/${skillId}`);
+}
+
+export async function uploadSkill(skillData: {
+  name: string;
+  description?: string;
+  trigger_words?: string[];
+}): Promise<{ ok: boolean; skill: SkillInfo }> {
+  return apiFetch(`${BASE}/skills/upload`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(skillData),
+  });
+}
+
+export async function deleteSkill(skillId: string): Promise<{ ok: boolean; deleted: string }> {
+  return apiFetch(`${BASE}/skills/${skillId}`, { method: "DELETE" });
+}
+
+export async function matchSkills(prompt: string): Promise<{ matches: SkillInfo[] }> {
+  return apiFetch(`${BASE}/skills/match`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+}
+
+// ── Template Library ────────────────────────────────────────────────────────
+
+export interface TemplateInfo {
+  id: string;
+  name: string;
+  description: string;
+  builtin: boolean;
+  report_types: string[];
+  tags: string[];
+}
+
+export async function listTemplates(): Promise<{ templates: TemplateInfo[] }> {
+  return apiFetch(`${BASE}/templates`);
+}
+
+export async function getTemplate(templateId: string): Promise<TemplateInfo> {
+  return apiFetch(`${BASE}/templates/${templateId}`);
+}
+
+export async function uploadTemplate(payload: {
+  name: string;
+  html_content: string;
+  description?: string;
+  report_types?: string[];
+  tags?: string[];
+}): Promise<{ ok: boolean; template: TemplateInfo }> {
+  return apiFetch(`${BASE}/templates/upload`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+// ── Methodology ─────────────────────────────────────────────────────────────
+
+export async function getMethodology(): Promise<Record<string, unknown>> {
+  return apiFetch(`${BASE}/methodology`);
+}
+
+export async function getMethodologySteps(): Promise<{ steps: Array<{ id: number; name: string; description: string; agent_action: string }> }> {
+  return apiFetch(`${BASE}/methodology/steps`);
+}

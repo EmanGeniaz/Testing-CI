@@ -1,5 +1,8 @@
 "use client";
 
+import { useEffect, useState, useRef, useCallback } from "react";
+import { listSkills, uploadSkill, type SkillInfo } from "../lib/api";
+
 type View = "studio" | "workbench" | "export" | "history";
 
 interface SidebarProps {
@@ -15,8 +18,6 @@ const WORKSPACE_ITEMS = [
   { id: "history" as View, label: "Past runs", icon: "clock" },
 ];
 
-const SKILLS = ["brand-insights", "category-insights", "competitor-compare", "segment-deepdive"];
-
 function NavIcon({ type }: { type: string }) {
   const props = { className: "w-[14px] h-[14px] opacity-60 flex-shrink-0", viewBox: "0 0 16 16", fill: "none", stroke: "currentColor", strokeWidth: "1.4" };
   switch (type) {
@@ -29,6 +30,45 @@ function NavIcon({ type }: { type: string }) {
 }
 
 export default function Sidebar({ activeView, onViewChange, sessionId }: SidebarProps) {
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [skillsLoading, setSkillsLoading] = useState(true);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const fetchSkills = useCallback(async () => {
+    try {
+      const data = await listSkills();
+      setSkills(data.skills);
+    } catch {
+      // Silently fall back to empty — API may not be up yet
+      setSkills([]);
+    } finally {
+      setSkillsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSkills();
+  }, [fetchSkills]);
+
+  const handleSkillUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      await uploadSkill({
+        name: parsed.name || file.name.replace(".json", ""),
+        description: parsed.description || "",
+        trigger_words: parsed.trigger_words || [],
+      });
+      await fetchSkills();
+    } catch (err) {
+      console.error("Skill upload failed:", err);
+    }
+    // Reset input so the same file can be re-selected
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   return (
     <aside className="border-r border-rule bg-white/70 backdrop-blur-[20px] py-[22px] flex flex-col sticky top-0 h-screen overflow-y-auto w-[240px] flex-shrink-0">
       {/* Brand */}
@@ -78,16 +118,38 @@ export default function Sidebar({ activeView, onViewChange, sessionId }: Sidebar
 
       {/* Skills */}
       <div className="mb-[22px]">
-        <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-2 px-[22px] pb-2 font-medium">
-          Skills
+        <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-2 px-[22px] pb-2 font-medium flex items-center justify-between">
+          <span>Skills</span>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="w-[16px] h-[16px] rounded flex items-center justify-center text-muted hover:text-ink hover:bg-paper-2 transition-colors"
+            title="Upload skill (.json)"
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4">
+              <path d="M5 1v8M1 5h8" />
+            </svg>
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            onChange={handleSkillUpload}
+            className="hidden"
+          />
         </div>
         <div className="px-[22px] pl-[47px] flex flex-col gap-1">
-          {SKILLS.map(skill => (
-            <div key={skill} className="font-mono text-[11px] text-muted flex items-center gap-2 cursor-pointer hover:text-ink-2 transition-colors">
-              <span className="w-[5px] h-[5px] rounded-full bg-green" />
-              {skill}
-            </div>
-          ))}
+          {skillsLoading ? (
+            <div className="font-mono text-[11px] text-muted">Loading...</div>
+          ) : skills.length === 0 ? (
+            <div className="font-mono text-[11px] text-muted">No skills loaded</div>
+          ) : (
+            skills.map(skill => (
+              <div key={skill.id} className="font-mono text-[11px] text-muted flex items-center gap-2 cursor-pointer hover:text-ink-2 transition-colors" title={skill.description}>
+                <span className="w-[5px] h-[5px] rounded-full bg-green flex-shrink-0" />
+                {skill.name}
+              </div>
+            ))
+          )}
         </div>
       </div>
 

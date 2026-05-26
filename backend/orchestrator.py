@@ -692,12 +692,41 @@ def _execute_tool(tool_name: str, tool_input: dict) -> dict:
 def _build_system_prompt(session_id: str, user_prompt: str) -> str:
     """Build the system prompt for the orchestrator LLM."""
 
-    # Load available skills
-    skills = list_report_types()
-    skills_text = "\n".join(
-        f"  - {s['id']}: {s['name']} — {s['description']}"
-        for s in skills
-    )
+    # Load available skills from the skill registry (not just hardcoded report types)
+    try:
+        from skill_registry import get_skill_registry
+        registry = get_skill_registry()
+        all_skills = registry.list_skills()
+        skills_text = "\n".join(
+            f"  - {s['id']}: {s['name']} — {s.get('description', '')}"
+            for s in all_skills
+        )
+    except Exception:
+        # Fallback to report types only
+        skills = list_report_types()
+        skills_text = "\n".join(
+            f"  - {s['id']}: {s['name']} — {s['description']}"
+            for s in skills
+        )
+
+    # Load methodology steps
+    try:
+        from methodology import get_methodology_for_orchestrator
+        methodology_text = get_methodology_for_orchestrator()
+    except Exception:
+        methodology_text = ""
+
+    # Load available templates
+    try:
+        from template_library import get_template_library
+        library = get_template_library()
+        templates = library.list_templates()
+        templates_text = "\n".join(
+            f"  - {t['id']}: {t['name']} — {t.get('description', '')}"
+            for t in templates
+        )
+    except Exception:
+        templates_text = "No templates available."
 
     # Load session data summary
     try:
@@ -726,8 +755,14 @@ the result, then THINK again about what to do next.
 ## Available Skills (Report Types / Tagging Methodologies)
 {skills_text}
 
+## Available Report Templates
+{templates_text}
+
 ## Current Session Data
 {data_summary}
+
+## Research Methodology
+{methodology_text}
 
 ## Your Workflow
 1. First, understand the user's request and the data available.
@@ -738,6 +773,7 @@ the result, then THINK again about what to do next.
 6. Analyze patterns in the tagged data.
 7. Generate a report with findings, evidence, and recommendations.
 8. Self-review the output for quality and completeness.
+9. Select the best template for the final report output.
 
 ## Rules
 - Always start by analyzing data quality so you know what columns exist.
@@ -748,6 +784,8 @@ the result, then THINK again about what to do next.
 - Ground all findings in actual data — never fabricate statistics or quotes.
 - The user's prompt may be high-level ("analyze this data") or specific ("find brand risks").
   Adapt your tool usage accordingly.
+- Follow the 13-step research methodology as a guide for thorough analysis.
+- Consider which template best fits the output when generating reports.
 """
 
 
