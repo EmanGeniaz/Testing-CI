@@ -469,6 +469,7 @@ def _build_platform_section(stats: dict) -> str:
     valid = stats["valid"]
     plat_items = _top_n(stats["platforms"], 10)
     reporter_items = _top_n(stats["reporter_types"], 10)
+    top_plat_count = plat_items[0][1] if plat_items else 0
 
     return f"""
     <div id="platforms" class="section">
