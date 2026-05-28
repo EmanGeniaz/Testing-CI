@@ -129,13 +129,23 @@ export default function AgentInspectorModal({
       .catch(() => {});
   }, []);
 
+  // Escape closes the modal — but only if no run is in progress.
+  // Otherwise prompt for confirmation so accidental keypress doesn't lose work.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      const hasWork = !!sessionId;
+      if (hasWork) {
+        if (window.confirm("Close this agent? Your session and any in-progress run will be preserved but you'll leave this view.")) {
+          onClose();
+        }
+      } else {
+        onClose();
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
+  }, [onClose, sessionId]);
 
   useEffect(() => {
     return () => {
@@ -493,7 +503,6 @@ export default function AgentInspectorModal({
         WebkitBackdropFilter: "blur(8px)",
         animation: "fadeIn 0.25s ease-out",
       }}
-      onClick={onClose}
     >
       <div
         className="grid w-full overflow-hidden"
@@ -548,7 +557,10 @@ export default function AgentInspectorModal({
           </div>
 
           <button
-            onClick={onClose}
+            onClick={() => {
+              if (sessionId && !window.confirm("Close this agent? Your session will be preserved.")) return;
+              onClose();
+            }}
             className="w-9 h-9 rounded-[10px] border border-rule bg-white text-muted hover:bg-paper-2 hover:text-ink transition-all flex items-center justify-center"
             aria-label="Close"
           >
