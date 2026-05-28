@@ -105,6 +105,12 @@ export default function AgentInspectorModal({
   const [progress, setProgress] = useState(0);
   const [analyzedRows, setAnalyzedRows] = useState(0);
 
+  /* checkpoint (inspect mode) */
+  const [checkpoint, setCheckpoint] = useState<{ tool: string; subAgentId: number } | null>(null);
+  const [refineOpen, setRefineOpen] = useState(false);
+  const [refineText, setRefineText] = useState("");
+  const [continueBusy, setContinueBusy] = useState(false);
+
   const startTimeRef = useRef<number | null>(null);
   const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -185,6 +191,51 @@ export default function AgentInspectorModal({
     []
   );
 
+  /* ── checkpoint actions (inspect mode) ───────────────────────────── */
+
+  const sendContinue = useCallback(
+    async (action: "approve" | "refine", feedback?: string) => {
+      if (!sessionId || !checkpoint) return;
+      setContinueBusy(true);
+      try {
+        const res = await fetch(`${BASE}/orchestrate/${sessionId}/continue`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, feedback }),
+        });
+        if (!res.ok) throw new Error(`continue failed (${res.status})`);
+
+        // Optimistically advance the UI back to "running" for the checkpointed step.
+        const ids = TOOL_TO_SUBAGENT[checkpoint.tool] || [];
+        if (action === "approve") {
+          setSubAgents(prev =>
+            prev.map(sa =>
+              ids.includes(sa.id) && sa.status === "review"
+                ? { ...sa, status: "complete", meta: "approved" }
+                : sa
+            )
+          );
+        } else {
+          setSubAgents(prev =>
+            prev.map(sa =>
+              ids.includes(sa.id)
+                ? { ...sa, status: "running", meta: "refining…" }
+                : sa
+            )
+          );
+        }
+        setCheckpoint(null);
+        setRefineOpen(false);
+        setRefineText("");
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : "Continue failed");
+      } finally {
+        setContinueBusy(false);
+      }
+    },
+    [sessionId, checkpoint]
+  );
+
   /* ── upload ───────────────────────────────────────────────────────── */
 
   const handleFile = useCallback(async (f: File) => {
@@ -240,7 +291,12 @@ export default function AgentInspectorModal({
       const res = await fetch(`${BASE}/orchestrate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, prompt: userPrompt, provider }),
+        body: JSON.stringify({
+          session_id: sessionId,
+          prompt: userPrompt,
+          provider,
+          inspect_mode: mode === "inspect",
+        }),
       });
 
       if (!res.ok || !res.body) throw new Error("Orchestrator unavailable");
@@ -277,6 +333,21 @@ export default function AgentInspectorModal({
               markToolRunning(ev.tool);
             } else if (ev.type === "tool_result" && typeof ev.tool === "string") {
               markToolComplete(ev.tool, ev.result);
+            } else if (ev.type === "checkpoint" && typeof ev.tool === "string") {
+              const ids = TOOL_TO_SUBAGENT[ev.tool] || [];
+              if (ids.length > 0) {
+                setCheckpoint({ tool: ev.tool, subAgentId: ids[0] });
+                setRefineOpen(false);
+                setRefineText("");
+                setSubAgents(prev =>
+                  prev.map(sa =>
+                    ids.includes(sa.id)
+                      ? { ...sa, status: "review", meta: "needs approval", tool: ev.tool }
+                      : sa
+                  )
+                );
+                setSelectedId(ids[0]);
+              }
             } else if (ev.type === "progress") {
               setProgress(ev.progress ?? 0);
               setAnalyzedRows(ev.analyzed_rows ?? 0);
@@ -405,10 +476,11 @@ export default function AgentInspectorModal({
   const statusLabel = useMemo(() => {
     if (runStatus === "error") return { text: "● Error", color: "var(--color-pink)" };
     if (runStatus === "complete") return { text: "● Complete", color: "var(--color-green)" };
+    if (checkpoint) return { text: "⏸ Waiting for approval", color: "var(--color-amber)" };
     if (runStatus === "running") return { text: "● Running", color: "var(--color-purple)" };
     if (sessionId) return { text: "● Ready", color: "var(--color-amber)" };
     return { text: "● Awaiting data", color: "var(--color-muted)" };
-  }, [runStatus, sessionId]);
+  }, [runStatus, sessionId, checkpoint]);
 
   /* ── render ───────────────────────────────────────────────────────── */
 
@@ -565,6 +637,18 @@ export default function AgentInspectorModal({
                 report={report}
                 sessionId={sessionId}
                 onViewReport={onViewReport}
+                checkpoint={checkpoint}
+                refineOpen={refineOpen}
+                refineText={refineText}
+                setRefineOpen={setRefineOpen}
+                setRefineText={setRefineText}
+                continueBusy={continueBusy}
+                onApprove={() => sendContinue("approve")}
+                onRefineSubmit={() => {
+                  const fb = refineText.trim();
+                  if (!fb) return;
+                  sendContinue("refine", fb);
+                }}
               />
             )}
           </div>
@@ -882,7 +966,7 @@ function ConfigurePane({
 
         <div>
           <label className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted font-medium block mb-2">
-            Context brief (optional)
+            Context Brief
           </label>
           <textarea
             value={contextBrief}
@@ -892,6 +976,9 @@ function ConfigurePane({
             style={{ fontFamily: "var(--font-display)" }}
             placeholder="What should the agent focus on?"
           />
+          <div className="font-mono text-[9px] uppercase tracking-[0.1em] text-muted-2 mt-1.5">
+            Pre-filled from your earlier brief · edit any time
+          </div>
         </div>
 
         {error && (
@@ -933,6 +1020,14 @@ function SubAgentDetail({
   report,
   sessionId,
   onViewReport,
+  checkpoint,
+  refineOpen,
+  refineText,
+  setRefineOpen,
+  setRefineText,
+  continueBusy,
+  onApprove,
+  onRefineSubmit,
 }: {
   sub: SubAgent;
   runStatus: RunStatus;
@@ -943,7 +1038,16 @@ function SubAgentDetail({
   report: Record<string, unknown> | null;
   sessionId: string;
   onViewReport: () => void;
+  checkpoint: { tool: string; subAgentId: number } | null;
+  refineOpen: boolean;
+  refineText: string;
+  setRefineOpen: (v: boolean) => void;
+  setRefineText: (v: string) => void;
+  continueBusy: boolean;
+  onApprove: () => void;
+  onRefineSubmit: () => void;
 }) {
+  const isCheckpointed = checkpoint?.subAgentId === sub.id;
   const statusBadge: Record<SubAgentStatus, { label: string; cls: string }> = {
     complete: { label: "Complete", cls: "bg-green-soft text-green" },
     running: { label: "Running", cls: "bg-purple-soft text-purple" },
@@ -1017,6 +1121,84 @@ function SubAgentDetail({
                 </div>
               </div>
             </>
+          )}
+        </div>
+      )}
+
+      {sub.status === "review" && (
+        <div>
+          <div
+            className="p-[12px_14px] mb-4 rounded-[6px] text-[13px] leading-[1.5] text-ink-2"
+            style={{
+              background: "var(--color-amber-soft, #fff7e0)",
+              borderLeft: "3px solid var(--color-amber)",
+            }}
+          >
+            <strong style={{ color: "var(--color-amber)" }}>Checkpoint:</strong>{" "}
+            The {sub.name.toLowerCase()} sub-agent finished. Review the result, then
+            approve to continue or send feedback to refine this step.
+          </div>
+
+          {sub.result && typeof sub.result === "object" && (
+            <>
+              <SectionLabel>Sub-agent result</SectionLabel>
+              <pre
+                className="bg-white border border-rule rounded-[8px] p-3 mb-4 text-[12px] leading-[1.5] text-ink-2 overflow-x-auto whitespace-pre-wrap"
+                style={{ maxHeight: 220 }}
+              >
+                {JSON.stringify(sub.result, null, 2)}
+              </pre>
+            </>
+          )}
+
+          {isCheckpointed && (
+            <div className="flex flex-col gap-3">
+              <div className="flex gap-2">
+                <button
+                  onClick={onApprove}
+                  disabled={continueBusy}
+                  className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.12em] font-medium text-white inline-flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                  style={{
+                    background: "linear-gradient(135deg, var(--color-purple), var(--color-pink))",
+                    boxShadow: "0 3px 10px rgba(108,76,255,0.25)",
+                  }}
+                >
+                  <span>Good to go ✓</span>
+                </button>
+                <button
+                  onClick={() => setRefineOpen(!refineOpen)}
+                  disabled={continueBusy}
+                  className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.12em] font-medium border border-rule text-ink-3 hover:text-purple hover:border-purple-rule hover:bg-purple-soft transition-all disabled:opacity-40"
+                >
+                  Refine with feedback ↻
+                </button>
+              </div>
+
+              {refineOpen && (
+                <div className="bg-white border border-rule rounded-[8px] p-3">
+                  <textarea
+                    value={refineText}
+                    onChange={e => setRefineText(e.target.value)}
+                    rows={3}
+                    placeholder="What should this sub-agent do differently?"
+                    className="w-full px-3 py-2 text-[13px] border border-rule rounded-[6px] bg-paper focus:border-purple focus:bg-white focus:shadow-[0_0_0_3px_var(--color-purple-soft)] outline-none transition-all resize-none"
+                    style={{ fontFamily: "var(--font-display)" }}
+                  />
+                  <div className="flex justify-end mt-2">
+                    <button
+                      onClick={onRefineSubmit}
+                      disabled={continueBusy || !refineText.trim()}
+                      className="px-4 py-2 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.12em] font-medium text-white inline-flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                      style={{
+                        background: "linear-gradient(135deg, var(--color-purple), var(--color-pink))",
+                      }}
+                    >
+                      Submit refinement
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </div>
       )}

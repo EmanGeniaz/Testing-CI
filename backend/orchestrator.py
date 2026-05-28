@@ -813,10 +813,35 @@ You can reference these when deciding how to acquire data or generate design ass
 #  MAIN ORCHESTRATOR LOOP
 # ═══════════════════════════════════════════════════════════════════════════════
 
+async def _wait_for_checkpoint(session_id: str, tool_name: str, timeout_seconds: int = 600) -> dict:
+    """
+    Poll the session's pending_checkpoint flag until the user approves or refines,
+    or until the timeout elapses. Returns a dict like
+      {"action": "approve"|"refine"|"timeout", "feedback": "..."}
+    """
+    m = _get_main()
+    elapsed = 0
+    while elapsed < timeout_seconds:
+        await asyncio.sleep(1)
+        elapsed += 1
+        try:
+            session = m.get_session(session_id)
+        except Exception:
+            continue
+        pending = session.get("pending_checkpoint") or {}
+        if pending.get("tool_name") == tool_name and not pending.get("waiting", True):
+            return {
+                "action": pending.get("action", "approve"),
+                "feedback": pending.get("feedback", "") or "",
+            }
+    return {"action": "timeout", "feedback": ""}
+
+
 async def run_orchestrator(
     session_id: str,
     user_prompt: str,
     provider: str = "claude",
+    inspect_mode: bool = False,
 ) -> AsyncGenerator:
     """
     Main orchestrator loop. Yields thinking steps as JSON lines for streaming.
@@ -1007,6 +1032,70 @@ async def run_orchestrator(
                 "result": result,
             }) + "\n"
 
+            # ── Inspect mode: pause after each tool call until the user approves ──
+            if inspect_mode:
+                m = _get_main()
+                m.update_session(session_id, {
+                    "pending_checkpoint": {
+                        "tool_name": tool_block.name,
+                        "result": result,
+                        "waiting": True,
+                    },
+                })
+
+                yield json.dumps({
+                    "type": "checkpoint",
+                    "tool": tool_block.name,
+                    "needs_approval": True,
+                }) + "\n"
+
+                decision = await _wait_for_checkpoint(
+                    session_id=session_id,
+                    tool_name=tool_block.name,
+                    timeout_seconds=600,
+                )
+
+                # Clear the pending checkpoint
+                try:
+                    m.update_session(session_id, {"pending_checkpoint": None})
+                except Exception:
+                    pass
+
+                if decision["action"] == "timeout":
+                    yield json.dumps({
+                        "type": "error",
+                        "message": (
+                            f"Checkpoint after '{tool_block.name}' timed out "
+                            "waiting for user approval."
+                        ),
+                    }) + "\n"
+                    return
+
+                # Feed the result (possibly with refinement feedback) back to the model
+                if decision["action"] == "refine" and decision["feedback"]:
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_block.id,
+                        "content": json.dumps(
+                            {
+                                "original_result": result,
+                                "user_refinement": decision["feedback"],
+                                "instruction": (
+                                    "The user reviewed this sub-agent's output and asked for "
+                                    "refinement. Re-run this step (or adjust your approach) "
+                                    "taking the feedback into account before continuing."
+                                ),
+                            },
+                            default=str,
+                        ),
+                    })
+                    yield json.dumps({
+                        "type": "thinking",
+                        "text": f"User requested refinement: {decision['feedback'][:300]}",
+                    }) + "\n"
+                    continue
+
+            # Default path (auto mode, or inspect mode with "approve")
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": tool_block.id,
