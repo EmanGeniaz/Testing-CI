@@ -6,10 +6,10 @@ import WorkbenchTab from "./components/WorkbenchTab";
 import ExportTab from "./components/ExportTab";
 import RunHistory from "./components/RunHistory";
 
-type View = "studio" | "workbench" | "export" | "history";
+type View = "agents" | "workbench" | "export" | "history";
 
 export default function Home() {
-  const [activeView, setActiveView] = useState<View>("studio");
+  const [activeView, setActiveView] = useState<View>("agents");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [filename, setFilename] = useState("");
   const [columns, setColumns] = useState<string[]>([]);
@@ -27,10 +27,10 @@ export default function Home() {
         {/* Topbar */}
         <div className="flex items-center px-10 py-3.5 border-b border-rule gap-6 bg-paper/75 backdrop-blur-[20px] sticky top-0 z-10">
           <div className="font-mono text-[11px] text-muted uppercase tracking-[0.12em] flex items-center gap-2">
-            <span>Studio</span>
+            <span>Agents</span>
             <span className="text-faint">/</span>
             <span className="text-ink">
-              {activeView === "studio" ? "New report" :
+              {activeView === "agents" ? "Browse agents" :
                 activeView === "workbench" ? "Workbench" :
                 activeView === "export" ? "Export" : "Past runs"}
             </span>
@@ -50,7 +50,7 @@ export default function Home() {
 
         {/* Main content */}
         <main className="flex-1 overflow-auto">
-          {activeView === "studio" && (
+          {activeView === "agents" && (
             <StudioView
               sessionId={sessionId}
               onSessionReady={(sid, fname, cols, rows) => {
@@ -78,7 +78,7 @@ export default function Home() {
           )}
 
           {activeView === "history" && (
-            <RunHistory onClose={() => setActiveView("studio")} />
+            <RunHistory onClose={() => setActiveView("agents")} />
           )}
 
           {(activeView === "workbench" || activeView === "export") && !sessionId && (
@@ -86,9 +86,9 @@ export default function Home() {
               <p className="text-[15px] text-muted" style={{ fontFamily: "var(--font-display)" }}>
                 Run an analysis first to see results here.
               </p>
-              <button onClick={() => setActiveView("studio")}
+              <button onClick={() => setActiveView("agents")}
                 className="mt-4 font-mono text-[11px] text-purple hover:underline uppercase tracking-[0.1em]">
-                Go to Studio
+                Go to Agents
               </button>
             </div>
           )}

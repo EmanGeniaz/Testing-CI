@@ -7,7 +7,7 @@ import {
   type SkillInfo, type MCPConnector,
 } from "../lib/api";
 
-type View = "studio" | "workbench" | "export" | "history";
+type View = "agents" | "workbench" | "export" | "history";
 
 interface SidebarProps {
   activeView: View;
@@ -16,7 +16,7 @@ interface SidebarProps {
 }
 
 const WORKSPACE_ITEMS = [
-  { id: "studio" as View, label: "Studio", icon: "doc" },
+  { id: "agents" as View, label: "Agents", icon: "doc" },
   { id: "workbench" as View, label: "Workbench", icon: "grid" },
   { id: "export" as View, label: "Export", icon: "download" },
   { id: "history" as View, label: "Past runs", icon: "clock" },
@@ -346,7 +346,7 @@ export default function Sidebar({ activeView, onViewChange, sessionId }: Sidebar
         <CollapsibleBody expanded={expanded.workspace}>
           {WORKSPACE_ITEMS.map(item => {
             const isActive = activeView === item.id;
-            const isDisabled = item.id !== "studio" && item.id !== "history" && !sessionId;
+            const isDisabled = item.id !== "agents" && item.id !== "history" && !sessionId;
             return (
               <button
                 key={item.id}
