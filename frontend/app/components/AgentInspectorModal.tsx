@@ -594,14 +594,23 @@ export default function AgentInspectorModal({
 
           {/* DETAILS RIGHT */}
           <div className="overflow-y-auto p-6" style={{ background: "var(--color-paper)" }}>
-            {/* Show upload UI when no session */}
-            {!sessionId ? (
-              <UploadPane
+            {/* Show combined data + configure pane until run starts */}
+            {runStatus === "idle" ? (
+              <DataPane
                 dragging={dragging}
                 uploading={uploading}
                 error={error}
+                file={file}
+                rowCount={rowCount}
+                columns={columns}
+                sessionId={sessionId}
                 contextBrief={contextBrief}
                 setContextBrief={setContextBrief}
+                primaryCol={primaryCol}
+                setPrimaryCol={setPrimaryCol}
+                provider={provider}
+                setProvider={setProvider}
+                onRun={handleRun}
                 onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
                 onDragLeave={() => setDragging(false)}
                 onDrop={(e) => {
@@ -612,20 +621,6 @@ export default function AgentInspectorModal({
                 }}
                 onFile={handleFile}
               />
-            ) : runStatus === "idle" ? (
-              <ConfigurePane
-                file={file}
-                rowCount={rowCount}
-                columns={columns}
-                primaryCol={primaryCol}
-                setPrimaryCol={setPrimaryCol}
-                provider={provider}
-                setProvider={setProvider}
-                contextBrief={contextBrief}
-                setContextBrief={setContextBrief}
-                onRun={handleRun}
-                error={error}
-              />
             ) : (
               <SubAgentDetail
                 sub={selected}
@@ -635,7 +630,7 @@ export default function AgentInspectorModal({
                 rowCount={rowCount}
                 taggedData={taggedData}
                 report={report}
-                sessionId={sessionId}
+                sessionId={sessionId || ""}
                 onViewReport={onViewReport}
                 checkpoint={checkpoint}
                 refineOpen={refineOpen}
@@ -757,12 +752,21 @@ function PipelineRow({
 
 /* ── Upload pane (no session yet) ──────────────────────────────────── */
 
-function UploadPane({
+function DataPane({
   dragging,
   uploading,
   error,
+  file,
+  rowCount,
+  columns,
+  sessionId,
   contextBrief,
   setContextBrief,
+  primaryCol,
+  setPrimaryCol,
+  provider,
+  setProvider,
+  onRun,
   onDragOver,
   onDragLeave,
   onDrop,
@@ -771,8 +775,17 @@ function UploadPane({
   dragging: boolean;
   uploading: boolean;
   error: string;
+  file: File | null;
+  rowCount: number;
+  columns: string[];
+  sessionId: string | null;
   contextBrief: string;
   setContextBrief: (v: string) => void;
+  primaryCol: string;
+  setPrimaryCol: (v: string) => void;
+  provider: string;
+  setProvider: (v: string) => void;
+  onRun: () => void;
   onDragOver: (e: React.DragEvent) => void;
   onDragLeave: () => void;
   onDrop: (e: React.DragEvent) => void;
@@ -831,50 +844,83 @@ function UploadPane({
         </div>
       </div>
 
-      {/* File Upload */}
+      {/* File Upload — compact when file is loaded */}
       <div className="bg-white border border-rule rounded-[12px] p-5 mb-4">
-        <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-2 mb-2.5 font-semibold">
-          Upload File
-        </div>
-        <div
-          onDragOver={onDragOver}
-          onDragLeave={onDragLeave}
-          onDrop={onDrop}
-          onClick={() => document.getElementById("modal-file-input")?.click()}
-          className={`flex flex-col items-center justify-center gap-3 py-8 rounded-xl border-2 border-dashed cursor-pointer transition-all ${
-            dragging ? "border-purple bg-purple-soft" : "border-rule-2 hover:border-purple-rule hover:bg-paper-2"
-          }`}
-        >
-          <input
-            id="modal-file-input"
-            type="file"
-            className="hidden"
-            accept=".csv,.xlsx,.xls,.json,.docx"
-            onChange={e => {
-              const f = e.target.files?.[0];
-              if (f) onFile(f);
-            }}
-          />
-          {uploading ? (
-            <div className="w-7 h-7 border-2 border-purple border-t-transparent rounded-full animate-spin" />
-          ) : (
-            <svg className="w-7 h-7 text-muted-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-            </svg>
+        <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-2 mb-2.5 font-semibold flex items-center justify-between">
+          <span>Upload File</span>
+          {sessionId && file && (
+            <span className="font-mono text-[10px] uppercase tracking-[0.12em] px-2.5 py-1 rounded-xl font-medium" style={{ background: "var(--color-green-soft)", color: "var(--color-green)" }}>
+              ✓ Uploaded
+            </span>
           )}
-          <p className="text-[13px] text-ink-3">
-            {uploading ? "Uploading…" : "Drop a file here or click to browse"}
-          </p>
-          <div className="flex gap-1.5">
-            {["xlsx", "csv", "json", "docx"].map(f => (
-              <span key={f}
-                className="font-mono text-[10px] uppercase px-2 py-0.5 bg-paper-2 rounded text-muted tracking-wide">
-                {f}
-              </span>
-            ))}
-          </div>
         </div>
+        {sessionId && file ? (
+          <div className="flex items-center gap-3 p-3 bg-paper border border-rule rounded-[8px]">
+            <div className="w-9 h-9 rounded-[8px] bg-purple-soft text-purple flex items-center justify-center font-mono text-[10px] font-bold uppercase">
+              {file.name.split(".").pop() || "FILE"}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-medium text-ink truncate">{file.name}</div>
+              <div className="font-mono text-[10px] text-muted mt-0.5">{rowCount} rows · {columns.length} cols</div>
+            </div>
+            <button
+              onClick={() => document.getElementById("modal-file-input")?.click()}
+              className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted hover:text-purple transition-colors px-2.5 py-1.5 border border-rule rounded-[6px] hover:border-purple-rule"
+            >
+              Replace
+            </button>
+            <input
+              id="modal-file-input"
+              type="file"
+              className="hidden"
+              accept=".csv,.xlsx,.xls,.json,.docx"
+              onChange={e => {
+                const f = e.target.files?.[0];
+                if (f) onFile(f);
+              }}
+            />
+          </div>
+        ) : (
+          <div
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onDrop={onDrop}
+            onClick={() => document.getElementById("modal-file-input")?.click()}
+            className={`flex flex-col items-center justify-center gap-3 py-8 rounded-xl border-2 border-dashed cursor-pointer transition-all ${
+              dragging ? "border-purple bg-purple-soft" : "border-rule-2 hover:border-purple-rule hover:bg-paper-2"
+            }`}
+          >
+            <input
+              id="modal-file-input"
+              type="file"
+              className="hidden"
+              accept=".csv,.xlsx,.xls,.json,.docx"
+              onChange={e => {
+                const f = e.target.files?.[0];
+                if (f) onFile(f);
+              }}
+            />
+            {uploading ? (
+              <div className="w-7 h-7 border-2 border-purple border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <svg className="w-7 h-7 text-muted-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+              </svg>
+            )}
+            <p className="text-[13px] text-ink-3">
+              {uploading ? "Uploading…" : "Drop a file here or click to browse"}
+            </p>
+            <div className="flex gap-1.5">
+              {["xlsx", "csv", "json", "docx"].map(f => (
+                <span key={f}
+                  className="font-mono text-[10px] uppercase px-2 py-0.5 bg-paper-2 rounded text-muted tracking-wide">
+                  {f}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="mt-3 text-[12px] text-pink bg-pink-soft border border-pink/20 px-3 py-2 rounded-lg">
@@ -923,6 +969,72 @@ function UploadPane({
           Persists across upload · configure · run
         </div>
       </div>
+
+      {/* Configure section — appears after upload */}
+      {sessionId && columns.length > 0 && (
+        <>
+          <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-2 mt-6 mb-3 font-semibold flex items-center gap-2">
+            <span>▾</span>
+            <span>Configure & Run</span>
+          </div>
+
+          <div className="bg-white border border-rule rounded-[12px] p-5 space-y-5">
+            <div>
+              <label className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted font-medium block mb-2">
+                Primary text column
+              </label>
+              <select
+                value={primaryCol}
+                onChange={e => setPrimaryCol(e.target.value)}
+                className="w-full px-3 py-2.5 text-[14px] border border-rule rounded-[7px] bg-paper focus:border-purple focus:bg-white focus:shadow-[0_0_0_3px_var(--color-purple-soft)] outline-none transition-all"
+              >
+                {columns.map(col => (
+                  <option key={col} value={col}>{col}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted font-medium block mb-2">
+                AI provider
+              </label>
+              <select
+                value={provider}
+                onChange={e => setProvider(e.target.value)}
+                className="w-full px-3 py-2.5 text-[14px] border border-rule rounded-[7px] bg-paper focus:border-purple focus:bg-white focus:shadow-[0_0_0_3px_var(--color-purple-soft)] outline-none transition-all"
+              >
+                {[
+                  { id: "claude", label: "Claude (Anthropic)" },
+                  { id: "gemini", label: "Gemini (Google)" },
+                  { id: "openai", label: "OpenAI" },
+                  { id: "groq", label: "Groq" },
+                ].map(p => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="pt-2 border-t border-rule flex items-center justify-between">
+              <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-2">
+                {rowCount} rows ready
+              </div>
+              <button
+                onClick={onRun}
+                className="inline-flex items-center gap-2.5 px-5 py-2.5 rounded-[8px] text-white font-mono text-[11px] uppercase tracking-[0.12em] font-medium"
+                style={{
+                  background: "linear-gradient(135deg, var(--color-purple), var(--color-pink))",
+                  boxShadow: "0 4px 12px rgba(108,76,255,0.25)",
+                }}
+              >
+                <span>Run agent</span>
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M2 6h8 M6 2l4 4-4 4" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
