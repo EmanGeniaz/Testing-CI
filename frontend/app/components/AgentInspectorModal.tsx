@@ -26,10 +26,20 @@ export interface AgentOption {
 
 interface AgentInspectorModalProps {
   agent: AgentOption;
-  onClose: () => void;
+  /** Legacy modal close — no longer used inside the workspace itself.
+   * Tab close is handled by the AgentTabBar in the parent. Kept optional
+   * so callers can still pass it without errors. */
+  onClose?: () => void;
   onSessionReady: (sid: string, filename: string, cols: string[], rowCount: number) => void;
   onViewReport: () => void;
+  /**
+   * Reports per-tab metadata back to the tab bar (filename + status).
+   * Optional — when omitted (legacy modal use), no-op.
+   */
+  onMetaChange?: (meta: { filename?: string; rowCount?: number; status: "idle" | "running" | "review" | "complete" | "error" }) => void;
 }
+
+export type TabStatus = "idle" | "running" | "review" | "complete" | "error";
 
 type RunStatus = "idle" | "running" | "complete" | "error";
 type SubAgentStatus = "waiting" | "running" | "complete" | "review";
@@ -74,9 +84,9 @@ const TOOL_TO_SUBAGENT: Record<string, number[]> = {
 
 export default function AgentInspectorModal({
   agent,
-  onClose,
   onSessionReady,
   onViewReport,
+  onMetaChange,
 }: AgentInspectorModalProps) {
   /* run state */
   const [mode, setMode] = useState<"auto" | "inspect">("inspect");
@@ -129,29 +139,28 @@ export default function AgentInspectorModal({
       .catch(() => {});
   }, []);
 
-  // Escape closes the modal — but only if no run is in progress.
-  // Otherwise prompt for confirmation so accidental keypress doesn't lose work.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      const hasWork = !!sessionId;
-      if (hasWork) {
-        if (window.confirm("Close this agent? Your session and any in-progress run will be preserved but you'll leave this view.")) {
-          onClose();
-        }
-      } else {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [onClose, sessionId]);
+  // No longer a modal — Escape no longer closes. Tab close is handled by the tab bar.
 
   useEffect(() => {
     return () => {
       if (elapsedTimerRef.current) clearInterval(elapsedTimerRef.current);
     };
   }, []);
+
+  // Report tab metadata up to the parent tab bar.
+  useEffect(() => {
+    if (!onMetaChange) return;
+    let status: TabStatus = "idle";
+    if (runStatus === "error") status = "error";
+    else if (runStatus === "complete") status = "complete";
+    else if (checkpoint) status = "review";
+    else if (runStatus === "running") status = "running";
+    onMetaChange({
+      filename: file?.name,
+      rowCount,
+      status,
+    });
+  }, [onMetaChange, runStatus, checkpoint, file, rowCount]);
 
   /* ── helpers ──────────────────────────────────────────────────────── */
 
@@ -495,28 +504,16 @@ export default function AgentInspectorModal({
   /* ── render ───────────────────────────────────────────────────────── */
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-8"
-      style={{
-        background: "rgba(20,19,42,0.5)",
-        backdropFilter: "blur(8px)",
-        WebkitBackdropFilter: "blur(8px)",
-        animation: "fadeIn 0.25s ease-out",
-      }}
-    >
+    <div className="px-6 pb-6 pt-4">
       <div
         className="grid w-full overflow-hidden"
         style={{
           background: "var(--color-paper)",
-          borderRadius: 16,
-          boxShadow: "0 32px 80px rgba(20,19,42,0.25)",
-          maxWidth: 1280,
-          maxHeight: 800,
-          height: "100%",
+          borderRadius: 14,
+          border: "1px solid var(--color-rule)",
+          height: "calc(100vh - 130px)",
           gridTemplateRows: "auto auto 1fr",
-          animation: "slideUp 0.3s cubic-bezier(0.16,1,0.3,1)",
         }}
-        onClick={e => e.stopPropagation()}
       >
         {/* HEADER */}
         <div className="flex items-center gap-4 bg-white border-b border-rule px-6 py-[18px]">
@@ -556,18 +553,6 @@ export default function AgentInspectorModal({
             ))}
           </div>
 
-          <button
-            onClick={() => {
-              if (sessionId && !window.confirm("Close this agent? Your session will be preserved.")) return;
-              onClose();
-            }}
-            className="w-9 h-9 rounded-[10px] border border-rule bg-white text-muted hover:bg-paper-2 hover:text-ink transition-all flex items-center justify-center"
-            aria-label="Close"
-          >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M2 2l8 8M10 2l-8 8" />
-            </svg>
-          </button>
         </div>
 
         {/* INFO BAR */}
@@ -662,11 +647,6 @@ export default function AgentInspectorModal({
         </div>
       </div>
 
-      {/* keyframes */}
-      <style jsx>{`
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-      `}</style>
     </div>
   );
 }

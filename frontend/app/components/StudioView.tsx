@@ -1,15 +1,12 @@
 "use client";
 
-import { useState } from "react";
-import AgentInspectorModal, { type AgentOption } from "./AgentInspectorModal";
+import { type AgentOption } from "./AgentInspectorModal";
 
 interface StudioViewProps {
-  onSessionReady: (sid: string, filename: string, cols: string[], rowCount: number) => void;
-  onViewReport: () => void;
-  sessionId: string | null;
+  onAgentSelect: (agent: AgentOption) => void;
 }
 
-const AGENTS: AgentOption[] = [
+export const AGENTS: AgentOption[] = [
   {
     id: "explainable_ai_tagging",
     name: "Brand Insights",
@@ -54,9 +51,7 @@ const AGENTS: AgentOption[] = [
   },
 ];
 
-export default function StudioView({ onSessionReady, onViewReport }: StudioViewProps) {
-  const [activeAgent, setActiveAgent] = useState<AgentOption | null>(null);
-
+export default function StudioView({ onAgentSelect }: StudioViewProps) {
   return (
     <div className="px-12 py-14 max-w-[1280px]" style={{ animation: "fadeUp 0.6s cubic-bezier(0.2, 0.7, 0.2, 1) both" }}>
       {/* Hero */}
@@ -80,7 +75,7 @@ export default function StudioView({ onSessionReady, onViewReport }: StudioViewP
           className="text-[17px] leading-[1.4] text-muted font-light max-w-[600px]"
           style={{ fontFamily: "var(--font-display)" }}
         >
-          Each agent uses a different skill and methodology. Pick one, or create your own.
+          Each agent uses a different skill and methodology. Selecting one opens it as a new tab — your other runs keep going in the background.
         </p>
       </header>
 
@@ -89,7 +84,7 @@ export default function StudioView({ onSessionReady, onViewReport }: StudioViewP
         {AGENTS.map(agent => (
           <button
             key={agent.id}
-            onClick={() => setActiveAgent(agent)}
+            onClick={() => onAgentSelect(agent)}
             className="text-left bg-white border border-rule rounded-[12px] p-[18px] cursor-pointer transition-all hover:-translate-y-[2px] hover:border-purple-rule"
             style={{ boxShadow: "0 1px 2px rgba(20,19,42,0.04)" }}
             onMouseEnter={e => (e.currentTarget.style.boxShadow = "0 8px 24px rgba(108,76,255,0.1)")}
@@ -116,7 +111,7 @@ export default function StudioView({ onSessionReady, onViewReport }: StudioViewP
               initials: "+",
               gradient: "linear-gradient(135deg, #6c4cff, #ff4d8d)",
             };
-            setActiveAgent(custom);
+            onAgentSelect(custom);
           }}
           className="col-span-3 text-left rounded-[12px] p-[18px] cursor-pointer transition-all hover:bg-purple-soft/40"
           style={{
@@ -158,19 +153,6 @@ export default function StudioView({ onSessionReady, onViewReport }: StudioViewP
           </div>
         </button>
       </div>
-
-      {/* Modal */}
-      {activeAgent && (
-        <AgentInspectorModal
-          agent={activeAgent}
-          onClose={() => setActiveAgent(null)}
-          onSessionReady={onSessionReady}
-          onViewReport={() => {
-            setActiveAgent(null);
-            onViewReport();
-          }}
-        />
-      )}
     </div>
   );
 }
