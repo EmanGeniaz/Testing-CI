@@ -778,6 +778,39 @@ function UploadPane({
   onDrop: (e: React.DragEvent) => void;
   onFile: (f: File) => void;
 }) {
+  const DATA_SOURCES: { category: string; sources: { id: string; name: string; icon: string; available: boolean }[] }[] = [
+    {
+      category: "Social Listening Platforms",
+      sources: [
+        { id: "brandwatch", name: "Brandwatch", icon: "📡", available: false },
+        { id: "meltwater", name: "Meltwater", icon: "💧", available: false },
+        { id: "sprinklr", name: "Sprinklr", icon: "💦", available: false },
+        { id: "talkwalker", name: "Talkwalker", icon: "👁", available: false },
+      ],
+    },
+    {
+      category: "Social Media Direct",
+      sources: [
+        { id: "reddit", name: "Reddit API", icon: "🤖", available: false },
+        { id: "twitter", name: "X / Twitter API", icon: "𝕏", available: false },
+        { id: "meta", name: "Meta API", icon: "📘", available: false },
+      ],
+    },
+    {
+      category: "InfoVision API",
+      sources: [
+        { id: "infovision", name: "InfoVision API", icon: "🔮", available: false },
+      ],
+    },
+    {
+      category: "Traditional Media",
+      sources: [
+        { id: "news_api", name: "News API", icon: "📰", available: false },
+        { id: "print", name: "Print Archives", icon: "📚", available: false },
+      ],
+    },
+  ];
+
   return (
     <div>
       <div className="flex items-center gap-[14px] mb-4 pb-4 border-b border-rule">
@@ -790,21 +823,25 @@ function UploadPane({
         <div className="flex-1">
           <div className="text-[20px] font-medium tracking-[-0.02em] leading-none mb-[3px] text-ink"
             style={{ fontFamily: "var(--font-display)" }}>
-            Upload your data
+            Data sources
           </div>
           <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
-            Drop a file to begin acquisition
+            Upload a file or connect a source · multi-source coming soon
           </div>
         </div>
       </div>
 
+      {/* File Upload */}
       <div className="bg-white border border-rule rounded-[12px] p-5 mb-4">
+        <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-2 mb-2.5 font-semibold">
+          Upload File
+        </div>
         <div
           onDragOver={onDragOver}
           onDragLeave={onDragLeave}
           onDrop={onDrop}
           onClick={() => document.getElementById("modal-file-input")?.click()}
-          className={`flex flex-col items-center justify-center gap-3 py-10 rounded-xl border-2 border-dashed cursor-pointer transition-all ${
+          className={`flex flex-col items-center justify-center gap-3 py-8 rounded-xl border-2 border-dashed cursor-pointer transition-all ${
             dragging ? "border-purple bg-purple-soft" : "border-rule-2 hover:border-purple-rule hover:bg-paper-2"
           }`}
         >
@@ -821,13 +858,9 @@ function UploadPane({
           {uploading ? (
             <div className="w-7 h-7 border-2 border-purple border-t-transparent rounded-full animate-spin" />
           ) : (
-            <svg className="w-8 h-8 text-muted-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"
-              />
+            <svg className="w-7 h-7 text-muted-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
             </svg>
           )}
           <p className="text-[13px] text-ink-3">
@@ -835,10 +868,8 @@ function UploadPane({
           </p>
           <div className="flex gap-1.5">
             {["xlsx", "csv", "json", "docx"].map(f => (
-              <span
-                key={f}
-                className="font-mono text-[10px] uppercase px-2 py-0.5 bg-paper-2 rounded text-muted tracking-wide"
-              >
+              <span key={f}
+                className="font-mono text-[10px] uppercase px-2 py-0.5 bg-paper-2 rounded text-muted tracking-wide">
                 {f}
               </span>
             ))}
@@ -852,10 +883,34 @@ function UploadPane({
         )}
       </div>
 
-      <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-2 mb-2 font-semibold">
-        Context brief (optional)
-      </div>
-      <div className="bg-white border border-rule rounded-[12px] p-4">
+      {/* Connector Sources */}
+      {DATA_SOURCES.map(group => (
+        <div key={group.category} className="bg-white border border-rule rounded-[12px] p-4 mb-3">
+          <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-2 mb-2.5 font-semibold">
+            {group.category}
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {group.sources.map(src => (
+              <div key={src.id}
+                className="flex items-center gap-2.5 px-3 py-2 border border-rule rounded-[8px] bg-paper/50 cursor-not-allowed opacity-70"
+                title="Coming soon — configure in MCP panel"
+              >
+                <span className="text-[15px]">{src.icon}</span>
+                <span className="text-[12px] text-ink-3 flex-1">{src.name}</span>
+                <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted-2">
+                  <rect x="3" y="6" width="8" height="6" rx="1"/><path d="M5 6V4a2 2 0 014 0v2"/>
+                </svg>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {/* Context Brief — always visible, persists */}
+      <div className="bg-white border border-rule rounded-[12px] p-4 mt-4">
+        <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-2 mb-2 font-semibold">
+          Context Brief (optional)
+        </div>
         <textarea
           className="w-full bg-transparent border border-rule rounded-[8px] px-3 py-2.5 text-[14px] leading-[1.5] text-ink outline-none resize-none transition-all focus:border-purple focus:shadow-[0_0_0_3px_var(--color-purple-soft)] placeholder:text-muted-2 placeholder:italic min-h-[80px]"
           style={{ fontFamily: "var(--font-display)" }}
@@ -864,6 +919,9 @@ function UploadPane({
           value={contextBrief}
           onChange={e => setContextBrief(e.target.value)}
         />
+        <div className="font-mono text-[9px] uppercase tracking-[0.1em] text-muted-2 mt-1.5">
+          Persists across upload · configure · run
+        </div>
       </div>
     </div>
   );
