@@ -352,6 +352,20 @@ export default function AgentInspectorModal({
               markToolRunning(ev.tool);
             } else if (ev.type === "tool_result" && typeof ev.tool === "string") {
               markToolComplete(ev.tool, ev.result);
+              // Capture the report when generate_report finishes so the
+              // Insights panel can render findings even if the orchestrator
+              // doesn't emit a separate "complete" event.
+              if (ev.tool === "generate_report" && ev.result?.report) {
+                setReport(ev.result.report);
+                // generate_report is effectively the end of the pipeline.
+                // Mark remaining sub-agents complete and the run as done.
+                setSubAgents(prev => prev.map(sa =>
+                  sa.status === "waiting" || sa.status === "running"
+                    ? { ...sa, status: "complete", meta: "complete" }
+                    : sa
+                ));
+                setRunStatus(s => (s === "running" ? "complete" : s));
+              }
             } else if (ev.type === "checkpoint" && typeof ev.tool === "string") {
               const ids = TOOL_TO_SUBAGENT[ev.tool] || [];
               if (ids.length > 0) {
@@ -1545,8 +1559,9 @@ function CompleteContent({
 
   /* ── Insights (7) ─ */
   if (sub.id === 7) {
-    const findings = ((report?.findings || result.findings || []) as Array<Record<string, unknown>>);
-    const evidence = ((report?.evidence || result.evidence || []) as Array<Record<string, unknown>>);
+    const toolReport = (result.report || {}) as Record<string, unknown>;
+    const findings = ((report?.findings || (toolReport.findings as unknown[]) || result.findings || []) as Array<Record<string, unknown>>);
+    const evidence = ((report?.evidence || (toolReport.evidence as unknown[]) || result.evidence || []) as Array<Record<string, unknown>>);
     return (
       <>
         <Reasoning text={`Generated ${findings.length} findings with supporting evidence.`} />
