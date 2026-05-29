@@ -32,9 +32,22 @@ from pptx_builder import build_report_pptx, build_data_pptx
 #  LOGGING
 # ═══════════════════════════════════════════════════════════════════════════════
 
+from data_snapshot import (
+    resolve_data_dir,
+    save_snapshot as _ds_save_snapshot,
+    load_snapshot as _ds_load_snapshot,
+    snapshot_status as _ds_snapshot_status,
+)
+from demo_runs import list_demos, get_demo, build_demo_session
+
+# Resolve DATA_DIR up-front (used by both logging and the DB paths below) via
+# the snapshot module's fallback chain so the rest of the file just sees a
+# single resolved path.
+_RESOLVED_DATA_DIR = resolve_data_dir()
+
 _log_handlers = [logging.StreamHandler()]
 try:
-    LOG_PATH = Path(os.getenv("DATA_DIR", str(Path(__file__).parent))) / "app.log"
+    LOG_PATH = _RESOLVED_DATA_DIR / "app.log"
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     _log_handlers.append(logging.FileHandler(LOG_PATH, encoding="utf-8"))
 except OSError:
@@ -143,13 +156,45 @@ async def cors_generic_exception_handler(request: Request, exc: Exception):
 #  PATHS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-DATA_DIR = Path(os.getenv("DATA_DIR", str(Path(__file__).parent)))
+DATA_DIR = _RESOLVED_DATA_DIR
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH   = DATA_DIR / "database.json"
 RUNS_PATH = DATA_DIR / "runs.json"
 RUNS_DIR  = DATA_DIR / "runs"
 RUNS_DIR.mkdir(exist_ok=True)
+
+log.info(f"DATA_DIR active: {DATA_DIR} (DB={DB_PATH}, RUNS={RUNS_PATH})")
+
+# ── Snapshot wrappers — these are the public entry points the rest of the app
+#    uses, so we can centralize the (data_dir, db_path, runs_path, runs_dir)
+#    arguments and provide a swallow-errors guarantee for save.
+
+def save_snapshot() -> Optional[Path]:
+    """Persist the full DB + runs to a single snapshot JSON. Never raises."""
+    try:
+        return _ds_save_snapshot(DATA_DIR, DB_PATH, RUNS_PATH, RUNS_DIR)
+    except Exception as e:
+        log.error(f"save_snapshot wrapper failed: {e}")
+        return None
+
+
+def load_snapshot(force: bool = False) -> bool:
+    """Restore the DB + runs from a snapshot if one exists. Never raises."""
+    try:
+        return _ds_load_snapshot(DATA_DIR, DB_PATH, RUNS_PATH, RUNS_DIR, force=force)
+    except Exception as e:
+        log.error(f"load_snapshot wrapper failed: {e}")
+        return False
+
+
+# Attempt snapshot restore on startup BEFORE the first request is served. The
+# load is non-destructive by default (won't clobber existing DB files), so it
+# is safe to call here even when an in-place DATA_DIR already has data.
+try:
+    load_snapshot()
+except Exception as _snap_e:
+    log.warning(f"Startup snapshot load skipped: {_snap_e}")
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DATABASE HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -185,6 +230,8 @@ def update_session(session_id: str, payload: dict):
     if session_id not in db["sessions"]:
         db["sessions"][session_id] = {}
     db["sessions"][session_id].update(payload)
+    # Track last-update time so /sessions can sort by recency
+    db["sessions"][session_id]["updated_at"] = datetime.utcnow().isoformat()
     save_db(db)
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -602,6 +649,7 @@ def _run_tagging_bg(session_id: str, provider: str, api_key: str,
         runs = load_runs()
         runs["runs"].insert(0, run_meta)
         save_runs(runs)
+        save_snapshot()
         log.info(f"=== RUN {run_id} COMPLETE | {completed}/{total} rows in {elapsed:.1f}s ===")
 
         # ── Auto-learn: save successful run as skill if novel ────────────
@@ -669,6 +717,7 @@ async def upload_file(file: UploadFile = File(...)) -> ORJSONResponse:
         "created_at": datetime.utcnow().isoformat(),
     }
     save_db(db)
+    save_snapshot()
     log.info(f"Uploaded: session={session_id} rows={len(records)} cols={columns}")
 
     return ORJSONResponse({
@@ -1843,6 +1892,11 @@ def generate_report(session_id: str, payload: GenerateReportPayload = None):
     if llm is None:
         log.info(f"No LLM available for session {session_id} — generating statistical fallback report")
         report = _generate_fallback_report(session, analyzed_data)
+        try:
+            update_session(session_id, {"report": report})
+            save_snapshot()
+        except Exception as e:
+            log.warning(f"Could not persist fallback report to session: {e}")
         return report
 
     # ── LLM-based report generation ───────────────────────────────────────
@@ -1965,6 +2019,12 @@ def generate_report(session_id: str, payload: GenerateReportPayload = None):
     log.info(f"LLM report generated for session {session_id}: "
              f"{len(report['sections'])} sections, {len(report['findings'])} findings, "
              f"{len(report['evidence'])} evidence items")
+
+    try:
+        update_session(session_id, {"report": report})
+        save_snapshot()
+    except Exception as e:
+        log.warning(f"Could not persist LLM report to session: {e}")
 
     return report
 
@@ -2420,6 +2480,137 @@ def api_list_active_mcp_connectors():
     """List only active (enabled) MCP connectors."""
     registry = get_mcp_registry()
     return {"connectors": registry.get_active_connectors()}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SESSIONS — LIST / LOAD / DELETE / SNAPSHOT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/sessions")
+def api_list_sessions():
+    """Return lightweight metadata for every known session.
+
+    Intentionally omits the heavy fields (raw_data, analyzed_data, report) so
+    a dashboard can list hundreds of sessions cheaply. Call /sessions/{sid}/load
+    or /session/{sid} when you actually need the rows.
+    """
+    db = load_db()
+    items = []
+    for sid, s in db.get("sessions", {}).items():
+        items.append({
+            "session_id": sid,
+            "filename": s.get("filename"),
+            "status": s.get("status", "unknown"),
+            "report_type": s.get("report_type"),
+            "focus_brand": s.get("dataset_context", {}).get("focus_brand", ""),
+            "row_count": len(s.get("raw_data", [])),
+            "analyzed_count": len(s.get("analyzed_data", [])),
+            "has_report": bool(s.get("report")),
+            "is_demo": bool(s.get("is_demo")),
+            "demo_id": s.get("demo_id"),
+            "created_at": s.get("created_at"),
+            "updated_at": s.get("updated_at") or s.get("created_at"),
+            "run_id": s.get("run_id"),
+        })
+    # Most-recent first (best-effort — sort by updated_at, fall back to created_at)
+    items.sort(key=lambda x: (x.get("updated_at") or x.get("created_at") or ""), reverse=True)
+    return {"sessions": items, "count": len(items)}
+
+
+@app.get("/sessions/{session_id}/load")
+def api_load_session(session_id: str):
+    """Load a full session payload (raw_data, analyzed_data, report) into the response.
+
+    This is the explicit 'restore into the UI' endpoint — mirrors GET /session/{sid}
+    but signals intent (and is the natural complement to DELETE /sessions/{sid}).
+    """
+    return get_session(session_id)
+
+
+@app.delete("/sessions/{session_id}")
+def api_delete_session(session_id: str):
+    """Purge a session from the DB. Also removes any run files this session owns."""
+    db = load_db()
+    if session_id not in db.get("sessions", {}):
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    removed_run_id = db["sessions"][session_id].get("run_id")
+    del db["sessions"][session_id]
+    save_db(db)
+
+    # Also drop the corresponding run file + index entry if present
+    if removed_run_id:
+        try:
+            run_file = RUNS_DIR / f"{removed_run_id}.json"
+            if run_file.exists():
+                run_file.unlink()
+        except OSError as e:
+            log.warning(f"Could not delete run file for {removed_run_id}: {e}")
+
+        try:
+            runs = load_runs()
+            runs["runs"] = [r for r in runs.get("runs", []) if r.get("run_id") != removed_run_id]
+            save_runs(runs)
+        except Exception as e:
+            log.warning(f"Could not prune runs index for {removed_run_id}: {e}")
+
+    save_snapshot()
+    log.info(f"Session deleted: {session_id} (run_id={removed_run_id})")
+    return {"ok": True, "deleted": session_id}
+
+
+@app.post("/sessions/snapshot")
+def api_trigger_snapshot():
+    """Manually trigger a snapshot save. Useful before a known-risky deploy."""
+    path = save_snapshot()
+    status = _ds_snapshot_status(DATA_DIR)
+    return {"ok": path is not None, "snapshot": status}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DEMO RUNS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/demos")
+def api_list_demos():
+    """List available pre-baked demo runs."""
+    return {"demos": list_demos()}
+
+
+@app.post("/demos/{demo_id}/load")
+def api_load_demo(demo_id: str):
+    """Materialize a demo run into a NEW session for the current user.
+
+    A fresh session_id is minted so the demo template stays pristine and
+    multiple users / loads don't interfere with each other.
+    """
+    if get_demo(demo_id) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown demo: {demo_id}")
+
+    new_session_id = str(uuid.uuid4())
+    session_payload = build_demo_session(demo_id, new_session_id)
+    if session_payload is None:
+        raise HTTPException(status_code=500, detail="Failed to build demo session")
+
+    db = load_db()
+    db.setdefault("sessions", {})
+    db["sessions"][new_session_id] = session_payload
+    save_db(db)
+    save_snapshot()
+
+    log.info(f"Demo loaded: {demo_id} -> session={new_session_id}")
+    return {
+        "ok": True,
+        "session_id": new_session_id,
+        "demo_id": demo_id,
+        "title": session_payload.get("demo_title"),
+        "filename": session_payload.get("filename"),
+        "row_count": session_payload.get("row_count"),
+        "status": session_payload.get("status"),
+        "has_report": bool(session_payload.get("report")),
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
