@@ -7,8 +7,9 @@ import AgentTabBar, { type TabDescriptor, type TabStatus } from "./components/Ag
 import WorkbenchTab from "./components/WorkbenchTab";
 import ExportTab from "./components/ExportTab";
 import RunHistory from "./components/RunHistory";
+import CompareView from "./components/CompareView";
 
-type View = "agents" | "workbench" | "export" | "history";
+type View = "agents" | "workbench" | "export" | "history" | "compare";
 
 interface TabSession {
   id: string;
@@ -122,7 +123,8 @@ export default function Home() {
                 <span className="text-faint">/</span>
                 <span className="text-ink">
                   {activeView === "workbench" ? "Workbench" :
-                    activeView === "export" ? "Export" : "Past runs"}
+                    activeView === "export" ? "Export" :
+                    activeView === "compare" ? "Compare runs" : "Past runs"}
                 </span>
               </>
             )}
@@ -198,6 +200,10 @@ export default function Home() {
 
           {activeView === "history" && (
             <RunHistory onClose={() => setActiveView("agents")} />
+          )}
+
+          {activeView === "compare" && (
+            <CompareView onGoToAgents={() => setActiveView("agents")} />
           )}
 
           {(activeView === "workbench" || activeView === "export") && !sessionId && (

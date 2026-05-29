@@ -105,6 +105,97 @@ export async function listRuns() {
   return apiFetch(`${BASE}/runs`);
 }
 
+// ── Sessions (lightweight metadata for picking runs to compare) ────────────
+
+export interface SessionInfo {
+  session_id: string;
+  filename: string | null;
+  status: string;
+  report_type: string | null;
+  focus_brand: string;
+  row_count: number;
+  analyzed_count: number;
+  has_report: boolean;
+  is_demo: boolean;
+  demo_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  run_id: string | null;
+}
+
+export async function listSessions(): Promise<{ sessions: SessionInfo[]; count: number }> {
+  return apiFetch(`${BASE}/sessions`);
+}
+
+// ── Comparison ─────────────────────────────────────────────────────────────
+
+export interface CompareFinding {
+  claim: string;
+  confidence: string;
+  so_what: string;
+}
+
+export interface CompareThemeBucket {
+  name: string;
+  count: number;
+}
+
+export interface CompareEvidence {
+  quote: string;
+  source: string;
+  sentiment: string;
+}
+
+export interface CompareRun {
+  session_id: string;
+  agent: string;
+  filename: string;
+  title: string;
+  subtitle: string;
+  executive_one_liner: string;
+  findings: CompareFinding[];
+  themes: CompareThemeBucket[];
+  sentiments: CompareThemeBucket[];
+  evidence: CompareEvidence[];
+  recommendations: string[];
+}
+
+export interface CompareOverlapTheme {
+  name: string;
+  session_ids: string[];
+  run_count: number;
+}
+
+export interface CompareOverlapFinding {
+  claim: string;
+  session_ids: string[];
+  run_count: number;
+}
+
+export interface CompareDivergence {
+  name: string;
+  session_id: string;
+  agent: string;
+}
+
+export interface ComparisonResult {
+  runs: CompareRun[];
+  overlaps: {
+    themes: CompareOverlapTheme[];
+    findings: CompareOverlapFinding[];
+  };
+  divergences: CompareDivergence[];
+  synthesis: string;
+}
+
+export async function compareRuns(sessionIds: string[]): Promise<ComparisonResult> {
+  return apiFetch(`${BASE}/compare`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_ids: sessionIds }),
+  });
+}
+
 export async function getRun(run_id: string) {
   return apiFetch(`${BASE}/runs/${run_id}`);
 }
@@ -242,6 +333,31 @@ export async function getLearnedPreferences(): Promise<{
   return apiFetch(`${BASE}/skills/learned-preferences`);
 }
 
+export interface MemoryInsights {
+  total_runs: number;
+  preferred_report_type: string | null;
+  preferred_provider: string | null;
+  preferred_design_theme: string | null;
+  report_type_counts: Record<string, number>;
+  provider_counts: Record<string, number>;
+  design_theme_counts: Record<string, number>;
+  refinement_feedback_count: number;
+  refinement_patterns: string[];
+  dataset_domain_counts: Record<string, number>;
+  avg_duration_seconds: number | null;
+  avg_findings_per_report: number | null;
+  avg_refinements_per_run: number;
+  recent_outcomes: Array<Record<string, unknown>>;
+}
+
+export async function getMemoryInsights(): Promise<MemoryInsights> {
+  return apiFetch(`${BASE}/memory/insights`);
+}
+
+export async function resetMemory(): Promise<{ ok: boolean; cleared_runs: number }> {
+  return apiFetch(`${BASE}/memory/reset`, { method: "POST" });
+}
+
 // ── MCP Connectors ────────────────────────────────────────────────────────
 
 export interface MCPConfigField {
@@ -300,6 +416,49 @@ export async function testMCPConnector(id: string): Promise<{ connector_id: stri
 
 export async function getActiveMCPConnectors(): Promise<{ connectors: MCPConnector[] }> {
   return apiFetch(`${BASE}/mcp/active`);
+}
+
+// ── Connector data pulls ──────────────────────────────────────────────────
+
+export interface ConnectorRow {
+  text: string;
+  url: string;
+  platform: string;
+  date: string;
+  author: string;
+  metadata: Record<string, unknown>;
+}
+
+export async function searchConnector(
+  connectorId: string,
+  query: string,
+  limit: number,
+  filters: Record<string, unknown> = {},
+): Promise<{ rows: ConnectorRow[]; row_count: number }> {
+  return apiFetch(`${BASE}/connectors/${connectorId}/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, limit, filters }),
+  });
+}
+
+export async function searchConnectorToSession(
+  connectorId: string,
+  query: string,
+  limit: number,
+  filters: Record<string, unknown> = {},
+): Promise<{
+  session_id: string;
+  row_count: number;
+  filename: string;
+  columns: string[];
+  preview: ConnectorRow[];
+}> {
+  return apiFetch(`${BASE}/connectors/${connectorId}/search-to-session`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, limit, filters }),
+  });
 }
 
 // ── Design Connector ───────────────────────────────────────────────────────

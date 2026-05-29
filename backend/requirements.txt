@@ -16,3 +16,5 @@ python-pptx>=1.0
 aiofiles>=23.2
 python-dotenv>=1.0.0
 orjson>=3.10
+requests>=2.31
+praw>=7.7

@@ -2224,7 +2224,12 @@ async def export_html_report(session_id: str):
 from skill_registry import get_skill_registry
 from template_library import get_template_library
 from methodology import get_methodology, get_methodology_steps, get_methodology_for_orchestrator
-from skill_memory import save_run_as_skill, get_learned_preferences
+from skill_memory import (
+    save_run_as_skill,
+    get_learned_preferences,
+    get_memory_insights,
+    reset_memory,
+)
 from design_connector import get_design_connector
 from mcp_registry import get_mcp_registry
 
@@ -2380,6 +2385,22 @@ def api_get_learned_preferences():
     return get_learned_preferences()
 
 
+@app.get("/memory/insights")
+def api_get_memory_insights():
+    """Return rich, structured memory insights for the Memory panel.
+
+    Includes refinement patterns, dataset domain counts, and quality metrics
+    on top of the basic preference counts.
+    """
+    return get_memory_insights()
+
+
+@app.post("/memory/reset")
+def api_reset_memory():
+    """Clear all learned agent memory (preferences, refinements, outcomes)."""
+    return reset_memory()
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DESIGN CONNECTOR ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2480,6 +2501,109 @@ def api_list_active_mcp_connectors():
     """List only active (enabled) MCP connectors."""
     registry = get_mcp_registry()
     return {"connectors": registry.get_active_connectors()}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CONNECTORS — SEARCH / PULL TO SESSION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ConnectorSearchPayload(BaseModel):
+    query: str
+    limit: int = 100
+    filters: dict = {}
+
+
+def _run_connector_search(connector_id: str, payload: ConnectorSearchPayload) -> list[dict]:
+    """Look up an enabled connector, run search, return standardized rows."""
+    registry = get_mcp_registry()
+    try:
+        meta = registry.get_connector(connector_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    if not meta.get("enabled"):
+        raise HTTPException(status_code=400, detail=f"Connector '{connector_id}' is not enabled")
+
+    instance = registry.get_active_connector_instance(connector_id)
+    if instance is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Connector '{connector_id}' has no live implementation",
+        )
+
+    filters = payload.filters or {}
+    try:
+        rows = instance.search(query=payload.query, limit=payload.limit, **filters)
+    except TypeError as e:
+        # Bad filter keyword — surface as 400 not 500.
+        raise HTTPException(status_code=400, detail=f"Invalid filter: {e}")
+    except Exception as e:
+        log.error("Connector %s search failed: %s\n%s", connector_id, e, traceback.format_exc())
+        raise HTTPException(status_code=502, detail=f"Connector search failed: {e}")
+    return rows
+
+
+@app.post("/connectors/{connector_id}/search")
+def api_connector_search(connector_id: str, payload: ConnectorSearchPayload):
+    """Run a search through an enabled connector and return standardized rows."""
+    rows = _run_connector_search(connector_id, payload)
+    return {"rows": rows, "row_count": len(rows)}
+
+
+@app.post("/connectors/{connector_id}/search-to-session")
+def api_connector_search_to_session(connector_id: str, payload: ConnectorSearchPayload):
+    """Run a connector search and load the rows as a new analysis session.
+
+    This is the path the frontend uses to "pull data" from Reddit/News into
+    a fresh session — equivalent to an upload, but the rows come from an API
+    rather than a file.
+    """
+    rows = _run_connector_search(connector_id, payload)
+    if not rows:
+        raise HTTPException(status_code=404, detail="Connector returned no rows for that query")
+
+    # Determine columns from the first row (standardized schema is consistent).
+    columns = ["text", "url", "platform", "date", "author", "metadata"]
+    # Build a friendly virtual filename.
+    safe_q = re.sub(r"[^\w\s-]", "", payload.query or "")[:40].strip().replace(" ", "-") or "query"
+    filename = f"{connector_id}-{safe_q}.json"
+
+    session_id = str(uuid.uuid4())
+    db = load_db()
+    db["sessions"][session_id] = {
+        "session_id": session_id,
+        "filename":   filename,
+        "columns":    columns,
+        "raw_data":   rows,
+        "preview":    rows[:4],
+        "dataset_context": {
+            "additional_context": f"Pulled from {connector_id} · query: {payload.query}",
+        },
+        "schema_config":   {},
+        "analyzed_data":   [],
+        "status":     "uploaded",
+        "created_at": datetime.utcnow().isoformat(),
+        "source": {
+            "type": "connector",
+            "connector_id": connector_id,
+            "query": payload.query,
+            "limit": payload.limit,
+            "filters": payload.filters,
+        },
+    }
+    save_db(db)
+    save_snapshot()
+    log.info(
+        "Connector %s → session %s · query=%r · rows=%d",
+        connector_id, session_id, payload.query, len(rows),
+    )
+    return {
+        "session_id": session_id,
+        "row_count": len(rows),
+        "filename": filename,
+        "columns": columns,
+        "preview": rows[:4],
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2610,6 +2734,251 @@ def api_load_demo(demo_id: str):
         "row_count": session_payload.get("row_count"),
         "status": session_payload.get("status"),
         "has_report": bool(session_payload.get("report")),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MULTI-AGENT COMPARISON
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class ComparePayload(BaseModel):
+    session_ids: List[str]
+
+
+def _compare_extract_run_summary(session_id: str, session: dict) -> dict:
+    """Reduce a session+report to the comparison shape the frontend needs."""
+    report = session.get("report") or {}
+    analyzed_data = session.get("analyzed_data", [])
+    stats = _collect_tag_stats(analyzed_data) if analyzed_data else {
+        "themes": {}, "sentiments": {}, "signals": {}, "drivers": {}, "total_rows": 0,
+    }
+
+    # Themes — top 5 with counts
+    themes_counter = stats.get("themes") or {}
+    top_themes = _top_n(themes_counter, 5) if themes_counter else []
+    themes = [{"name": name, "count": cnt} for name, cnt in top_themes]
+
+    # Sentiment / voice mix
+    sentiments_counter = stats.get("sentiments") or {}
+    sentiments = [{"name": name, "count": cnt} for name, cnt in _top_n(sentiments_counter, 8)] if sentiments_counter else []
+
+    # Findings — top 5
+    findings_raw = report.get("findings") or []
+    findings = []
+    for f in findings_raw[:5]:
+        if not isinstance(f, dict):
+            continue
+        findings.append({
+            "claim": str(f.get("claim") or ""),
+            "confidence": str(f.get("confidence") or "medium"),
+            "so_what": str(f.get("so_what") or ""),
+        })
+
+    # Evidence — top 3
+    evidence_raw = report.get("evidence") or []
+    evidence = []
+    for e in evidence_raw[:3]:
+        if not isinstance(e, dict):
+            continue
+        evidence.append({
+            "quote": str(e.get("quote") or "")[:400],
+            "source": str(e.get("source") or ""),
+            "sentiment": str(e.get("sentiment") or ""),
+        })
+
+    # So-what recommendations — top 3 (split or fall back to findings.so_what)
+    so_what_text = report.get("so_what") or ""
+    recommendations = []
+    if isinstance(so_what_text, str) and so_what_text.strip():
+        # Try to split on sentence boundaries / bullet markers
+        parts = re.split(r"(?<=[.!?])\s+(?=[A-Z*])", so_what_text.strip())
+        recommendations = [p.strip(" -•").strip() for p in parts if p.strip()][:3]
+    if not recommendations:
+        for f in findings:
+            if f["so_what"]:
+                recommendations.append(f["so_what"])
+            if len(recommendations) >= 3:
+                break
+
+    return {
+        "session_id": session_id,
+        "agent": session.get("report_type") or DEFAULT_REPORT_TYPE_ID,
+        "filename": session.get("filename") or "Dataset",
+        "title": report.get("title") or session.get("filename") or "Untitled run",
+        "subtitle": report.get("subtitle") or "",
+        "executive_one_liner": (
+            report.get("executive_one_liner")
+            or (report.get("sections", [{}])[0].get("body", "") if report.get("sections") else "")
+            or ""
+        ),
+        "findings": findings,
+        "themes": themes,
+        "sentiments": sentiments,
+        "evidence": evidence,
+        "recommendations": recommendations,
+    }
+
+
+def _compare_overlaps(runs: list[dict]) -> dict:
+    """Compute themes and findings that appear in 2+ runs (case-insensitive)."""
+    from collections import Counter, defaultdict
+
+    theme_to_runs: dict[str, list[str]] = defaultdict(list)
+    for run in runs:
+        seen = set()
+        for t in run.get("themes", []):
+            key = (t.get("name") or "").strip().lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            theme_to_runs[key].append(run["session_id"])
+
+    overlap_themes = []
+    divergence_themes = []
+    # Use the first-encountered display name for each key
+    display = {}
+    for run in runs:
+        for t in run.get("themes", []):
+            key = (t.get("name") or "").strip().lower()
+            display.setdefault(key, t.get("name") or key)
+    for key, sids in theme_to_runs.items():
+        item = {"name": display.get(key, key), "session_ids": sids, "run_count": len(sids)}
+        if len(sids) >= 2:
+            overlap_themes.append(item)
+        else:
+            divergence_themes.append(item)
+    overlap_themes.sort(key=lambda x: -x["run_count"])
+
+    # Findings overlap — fuzzy on the first 6 tokens of the claim
+    def _norm_claim(s: str) -> str:
+        tokens = re.findall(r"[a-z0-9]+", s.lower())
+        return " ".join(tokens[:6])
+
+    claim_to_runs: dict[str, list[str]] = defaultdict(list)
+    claim_display: dict[str, str] = {}
+    for run in runs:
+        for f in run.get("findings", []):
+            key = _norm_claim(f.get("claim", ""))
+            if not key:
+                continue
+            if run["session_id"] in claim_to_runs[key]:
+                continue
+            claim_to_runs[key].append(run["session_id"])
+            claim_display.setdefault(key, f.get("claim", ""))
+    overlap_findings = [
+        {"claim": claim_display[k], "session_ids": v, "run_count": len(v)}
+        for k, v in claim_to_runs.items() if len(v) >= 2
+    ]
+    overlap_findings.sort(key=lambda x: -x["run_count"])
+
+    return {
+        "themes": overlap_themes,
+        "findings": overlap_findings,
+        "divergent_themes": divergence_themes,
+    }
+
+
+def _compare_synthesis(runs: list[dict], overlaps: dict) -> str:
+    """Template-based synthesis paragraph. LLM-free so it always works."""
+    if not runs:
+        return "No runs were provided for comparison."
+
+    agent_names = [r["agent"].replace("_", " ") for r in runs]
+    agents_str = ", ".join(agent_names[:-1]) + (" and " + agent_names[-1] if len(agent_names) > 1 else agent_names[0])
+
+    convergent = overlaps.get("themes", [])
+    if convergent:
+        top = convergent[:3]
+        conv_str = ", ".join(f"*{t['name']}* (in {t['run_count']} of {len(runs)} runs)" for t in top)
+        convergent_sentence = f"the convergent signal is {conv_str}"
+    else:
+        convergent_sentence = "the reports show no single shared dominant theme"
+
+    divergent = overlaps.get("divergent_themes", [])
+    if divergent:
+        # Pick a representative divergent theme per run if possible
+        seen_runs: set[str] = set()
+        examples = []
+        for d in divergent:
+            sid = d["session_ids"][0]
+            if sid in seen_runs:
+                continue
+            seen_runs.add(sid)
+            run = next((r for r in runs if r["session_id"] == sid), None)
+            if run:
+                examples.append(f"*{d['name']}* (only in {run['agent'].replace('_', ' ')})")
+            if len(examples) >= 3:
+                break
+        divergent_sentence = "where they diverge: " + ", ".join(examples) if examples else "where they diverge: each report surfaces unique themes its peers miss"
+    else:
+        divergent_sentence = "where they diverge: the reports are largely aligned"
+
+    # Hidden insight — strongest finding from the report with the highest unique theme count
+    hidden = ""
+    unique_per_run: dict[str, int] = {r["session_id"]: 0 for r in runs}
+    for d in divergent:
+        for sid in d["session_ids"]:
+            unique_per_run[sid] = unique_per_run.get(sid, 0) + 1
+    if unique_per_run:
+        top_sid = max(unique_per_run, key=lambda s: unique_per_run[s])
+        top_run = next((r for r in runs if r["session_id"] == top_sid), None)
+        if top_run and top_run.get("findings"):
+            hidden = top_run["findings"][0]["claim"]
+    if not hidden and runs and runs[0].get("findings"):
+        hidden = runs[0]["findings"][0]["claim"]
+    hidden_sentence = f"the hidden insight worth pulling forward: {hidden}" if hidden else "the hidden insight is that no single agent has the full picture"
+
+    return (
+        f"Across these {len(runs)} reports from {agents_str}, "
+        f"{convergent_sentence}. {divergent_sentence.capitalize()}. "
+        f"{hidden_sentence.capitalize()}."
+    )
+
+
+@app.post("/compare")
+def compare_runs(payload: ComparePayload):
+    """Compare 2-4 completed sessions side-by-side.
+
+    Loads each session's report + analyzed_data, computes overlaps/divergences
+    on themes and findings, and produces a synthesis paragraph (template-based,
+    no LLM required).
+    """
+    if not payload.session_ids or len(payload.session_ids) < 2:
+        raise HTTPException(status_code=400, detail="Provide at least 2 session_ids to compare.")
+    if len(payload.session_ids) > 4:
+        raise HTTPException(status_code=400, detail="Compare at most 4 sessions at a time.")
+
+    db = load_db()
+    sessions_map = db.get("sessions", {})
+
+    runs = []
+    for sid in payload.session_ids:
+        if sid not in sessions_map:
+            raise HTTPException(status_code=404, detail=f"Session not found: {sid}")
+        runs.append(_compare_extract_run_summary(sid, sessions_map[sid]))
+
+    overlaps = _compare_overlaps(runs)
+    synthesis = _compare_synthesis(runs, overlaps)
+
+    divergences = []
+    for d in overlaps.get("divergent_themes", []):
+        sid = d["session_ids"][0]
+        run = next((r for r in runs if r["session_id"] == sid), None)
+        divergences.append({
+            "name": d["name"],
+            "session_id": sid,
+            "agent": run["agent"] if run else "",
+        })
+
+    return {
+        "runs": runs,
+        "overlaps": {
+            "themes": overlaps.get("themes", []),
+            "findings": overlaps.get("findings", []),
+        },
+        "divergences": divergences,
+        "synthesis": synthesis,
     }
 
 

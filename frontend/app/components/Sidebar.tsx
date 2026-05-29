@@ -2,12 +2,13 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 import {
-  listSkills, uploadSkill, getMethodologySteps, getLearnedPreferences,
+  listSkills, uploadSkill, getMethodologySteps,
+  getMemoryInsights, resetMemory,
   listMCPConnectors, enableMCPConnector, disableMCPConnector, testMCPConnector,
-  type SkillInfo, type MCPConnector,
+  type SkillInfo, type MCPConnector, type MemoryInsights,
 } from "../lib/api";
 
-type View = "agents" | "workbench" | "export" | "history";
+type View = "agents" | "workbench" | "export" | "history" | "compare";
 
 interface SidebarProps {
   activeView: View;
@@ -18,6 +19,7 @@ interface SidebarProps {
 const WORKSPACE_ITEMS = [
   { id: "agents" as View, label: "Agents", icon: "doc" },
   { id: "workbench" as View, label: "Workbench", icon: "grid" },
+  { id: "compare" as View, label: "Compare runs", icon: "compare" },
   { id: "export" as View, label: "Export", icon: "download" },
   { id: "history" as View, label: "Past runs", icon: "clock" },
 ];
@@ -29,6 +31,7 @@ function NavIcon({ type }: { type: string }) {
     case "grid": return <svg {...props}><path d="M3 3h4v4H3z M9 3h4v4H9z M3 9h4v4H3z M9 9h4v4H9z"/></svg>;
     case "download": return <svg {...props}><path d="M3 10v3h10v-3 M8 2v8 M5 7l3 3 3-3"/></svg>;
     case "clock": return <svg {...props}><circle cx="8" cy="8" r="6"/><path d="M8 4v4l3 2"/></svg>;
+    case "compare": return <svg {...props}><rect x="2" y="3" width="7" height="9" rx="1"/><rect x="7" y="6" width="7" height="9" rx="1"/></svg>;
     default: return null;
   }
 }
@@ -156,6 +159,149 @@ function ModalHeader({ title, subtitle, icon, onClose }: { title: string; subtit
   );
 }
 
+/* ── Memory panel body ───────────────────────────────────────────────── */
+function PreferenceBar({ label, count, max }: { label: string; count: number; max: number }) {
+  const pct = max > 0 ? Math.round((count / max) * 100) : 0;
+  return (
+    <div className="mb-2 last:mb-0">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[12.5px] text-ink-2 truncate pr-2">{label}</span>
+        <span className="font-mono text-[10px] text-muted-2 flex-shrink-0">
+          {count} {count === 1 ? "run" : "runs"}
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--color-rule)" }}>
+        <div
+          className="h-full rounded-full"
+          style={{
+            width: `${pct}%`,
+            background: "linear-gradient(90deg, var(--color-purple), var(--color-pink))",
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function MemorySectionCard({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="border border-rule rounded-[10px] p-4 mb-3 last:mb-0">
+      <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-2 mb-3 flex items-center justify-between">
+        <span>{title}</span>
+        {hint && <span className="text-muted normal-case tracking-normal text-[10px]">{hint}</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function MemoryPanelBody({ insights }: { insights: MemoryInsights }) {
+  const rtEntries = Object.entries(insights.report_type_counts || {}).sort((a, b) => b[1] - a[1]);
+  const provEntries = Object.entries(insights.provider_counts || {}).sort((a, b) => b[1] - a[1]);
+  const domainEntries = Object.entries(insights.dataset_domain_counts || {}).sort((a, b) => b[1] - a[1]);
+  const themeEntries = Object.entries(insights.design_theme_counts || {}).sort((a, b) => b[1] - a[1]);
+
+  const maxPref = Math.max(
+    1,
+    ...rtEntries.map(([, c]) => c),
+    ...provEntries.map(([, c]) => c),
+    ...themeEntries.map(([, c]) => c),
+  );
+
+  const avgMin = insights.avg_duration_seconds != null
+    ? (insights.avg_duration_seconds / 60).toFixed(1)
+    : null;
+
+  return (
+    <div>
+      {/* Preferred Patterns */}
+      {(rtEntries.length > 0 || provEntries.length > 0 || themeEntries.length > 0) && (
+        <MemorySectionCard title="Preferred Patterns" hint="Most-used choices">
+          {rtEntries.length > 0 && (
+            <div className="mb-3">
+              <div className="font-mono text-[9px] text-muted-2 uppercase tracking-[0.08em] mb-1.5">Report type</div>
+              {rtEntries.slice(0, 5).map(([k, v]) => (
+                <PreferenceBar key={k} label={k} count={v} max={maxPref} />
+              ))}
+            </div>
+          )}
+          {provEntries.length > 0 && (
+            <div className="mb-3 last:mb-0">
+              <div className="font-mono text-[9px] text-muted-2 uppercase tracking-[0.08em] mb-1.5">Provider</div>
+              {provEntries.slice(0, 5).map(([k, v]) => (
+                <PreferenceBar key={k} label={k} count={v} max={maxPref} />
+              ))}
+            </div>
+          )}
+          {themeEntries.length > 0 && (
+            <div>
+              <div className="font-mono text-[9px] text-muted-2 uppercase tracking-[0.08em] mb-1.5">Design theme</div>
+              {themeEntries.slice(0, 5).map(([k, v]) => (
+                <PreferenceBar key={k} label={k} count={v} max={maxPref} />
+              ))}
+            </div>
+          )}
+        </MemorySectionCard>
+      )}
+
+      {/* Refinement requests */}
+      {insights.refinement_patterns && insights.refinement_patterns.length > 0 && (
+        <MemorySectionCard title="Common Refinement Requests" hint="Auto-applied next run">
+          <ul className="space-y-1.5">
+            {insights.refinement_patterns.map((p, i) => (
+              <li key={i} className="text-[13px] text-ink-2 flex items-center gap-2">
+                <span className="w-[5px] h-[5px] rounded-full flex-shrink-0" style={{ background: "var(--color-purple)" }} />
+                {p}
+              </li>
+            ))}
+          </ul>
+        </MemorySectionCard>
+      )}
+
+      {/* Dataset patterns */}
+      {domainEntries.length > 0 && (
+        <MemorySectionCard title="Dataset Patterns" hint="What you typically analyze">
+          <div className="flex flex-wrap gap-1.5">
+            {domainEntries.map(([k, v]) => (
+              <span
+                key={k}
+                className="font-mono text-[10px] px-2 py-1 rounded"
+                style={{ background: "var(--color-purple-soft)", color: "var(--color-purple)" }}
+              >
+                {k} <span className="opacity-60">·</span> {v}
+              </span>
+            ))}
+          </div>
+        </MemorySectionCard>
+      )}
+
+      {/* Quality insights */}
+      <MemorySectionCard title="Quality Insights">
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <div className="text-[20px] font-medium text-ink leading-none" style={{ fontFamily: "var(--font-display)" }}>
+              {insights.avg_findings_per_report ?? "—"}
+            </div>
+            <div className="font-mono text-[9px] uppercase tracking-[0.08em] text-muted-2 mt-1.5">Avg findings/report</div>
+          </div>
+          <div>
+            <div className="text-[20px] font-medium text-ink leading-none" style={{ fontFamily: "var(--font-display)" }}>
+              {insights.avg_refinements_per_run ?? 0}
+            </div>
+            <div className="font-mono text-[9px] uppercase tracking-[0.08em] text-muted-2 mt-1.5">Avg refinements/run</div>
+          </div>
+          <div>
+            <div className="text-[20px] font-medium text-ink leading-none" style={{ fontFamily: "var(--font-display)" }}>
+              {avgMin != null ? `${avgMin}m` : "—"}
+            </div>
+            <div className="font-mono text-[9px] uppercase tracking-[0.08em] text-muted-2 mt-1.5">Avg run length</div>
+          </div>
+        </div>
+      </MemorySectionCard>
+    </div>
+  );
+}
+
 export default function Sidebar({ activeView, onViewChange, sessionId }: SidebarProps) {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [skillsLoading, setSkillsLoading] = useState(true);
@@ -184,16 +330,9 @@ export default function Sidebar({ activeView, onViewChange, sessionId }: Sidebar
   const [memoryCount, setMemoryCount] = useState<number>(0);
   const [knowledgeModal, setKnowledgeModal] = useState<"methodology" | "memory" | null>(null);
   const [methodologySteps, setMethodologySteps] = useState<Array<{ id: number; name: string; description: string; agent_action: string }>>([]);
-  const [learnedPrefs, setLearnedPrefs] = useState<{
-    total_runs: number;
-    preferred_report_type: string | null;
-    preferred_provider: string | null;
-    preferred_design_theme: string | null;
-    report_type_counts: Record<string, number>;
-    provider_counts: Record<string, number>;
-    design_theme_counts: Record<string, number>;
-    refinement_feedback_count: number;
-  } | null>(null);
+  const [memoryInsights, setMemoryInsights] = useState<MemoryInsights | null>(null);
+  const [resetConfirm, setResetConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const fetchSkills = useCallback(async () => {
     try {
@@ -234,13 +373,35 @@ export default function Sidebar({ activeView, onViewChange, sessionId }: Sidebar
         setMethodologySteps(res.steps);
       })
       .catch(() => {});
-    getLearnedPreferences()
+    getMemoryInsights()
       .then(res => {
         setMemoryCount(res.total_runs);
-        setLearnedPrefs(res);
+        setMemoryInsights(res);
       })
       .catch(() => {});
   }, []);
+
+  const refreshMemory = useCallback(() => {
+    getMemoryInsights()
+      .then(res => {
+        setMemoryCount(res.total_runs);
+        setMemoryInsights(res);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleResetMemory = useCallback(async () => {
+    setResetting(true);
+    try {
+      await resetMemory();
+      setResetConfirm(false);
+      refreshMemory();
+    } catch (err) {
+      console.error("Failed to reset memory:", err);
+    } finally {
+      setResetting(false);
+    }
+  }, [refreshMemory]);
 
   const handleSkillUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -346,7 +507,7 @@ export default function Sidebar({ activeView, onViewChange, sessionId }: Sidebar
         <CollapsibleBody expanded={expanded.workspace}>
           {WORKSPACE_ITEMS.map(item => {
             const isActive = activeView === item.id;
-            const isDisabled = item.id !== "agents" && item.id !== "history" && !sessionId;
+            const isDisabled = item.id !== "agents" && item.id !== "history" && item.id !== "compare" && !sessionId;
             return (
               <button
                 key={item.id}
@@ -604,93 +765,64 @@ export default function Sidebar({ activeView, onViewChange, sessionId }: Sidebar
       </OverlayModal>
 
       {/* ── Memory modal (full-screen overlay) ─────────────────────────── */}
-      <OverlayModal open={knowledgeModal === "memory"} onClose={closeKnowledgeModal} maxWidth={640}>
-        <ModalHeader title="Agent Memory" onClose={closeKnowledgeModal} />
+      <OverlayModal open={knowledgeModal === "memory"} onClose={closeKnowledgeModal} maxWidth={720}>
+        <ModalHeader
+          title="What the agents have learned"
+          subtitle={`${memoryCount} runs analyzed`}
+          onClose={closeKnowledgeModal}
+        />
         <div className="p-6 overflow-y-auto">
-          {/* Summary stat */}
-          <div className="text-center mb-6">
-            <div className="text-[42px] font-medium text-ink leading-none" style={{ fontFamily: "var(--font-display)" }}>
-              {memoryCount}
-            </div>
-            <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted mt-2">
-              Preferences learned from past runs
-            </div>
-          </div>
+          <p className="text-[13px] text-muted leading-[1.55] mb-5">
+            Memory is built from your past runs. The orchestrator reads this back at the start
+            of every new run and applies your common refinement patterns up front.
+          </p>
 
-          {learnedPrefs && memoryCount > 0 ? (
-            <div className="grid grid-cols-1 gap-3">
-              {/* Preferred report type */}
-              {learnedPrefs.preferred_report_type && (
-                <div className="border border-rule rounded-[10px] p-4">
-                  <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-2 mb-1.5">Preferred Report Type</div>
-                  <div className="text-[14px] font-medium text-ink" style={{ fontFamily: "var(--font-display)" }}>
-                    {learnedPrefs.preferred_report_type}
-                  </div>
-                  {Object.keys(learnedPrefs.report_type_counts).length > 1 && (
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {Object.entries(learnedPrefs.report_type_counts).map(([type, count]) => (
-                        <span key={type} className="font-mono text-[9px] px-2 py-0.5 bg-paper-2 text-muted rounded">
-                          {type}: {count}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Preferred provider */}
-              {learnedPrefs.preferred_provider && (
-                <div className="border border-rule rounded-[10px] p-4">
-                  <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-2 mb-1.5">Preferred Provider</div>
-                  <div className="text-[14px] font-medium text-ink" style={{ fontFamily: "var(--font-display)" }}>
-                    {learnedPrefs.preferred_provider}
-                  </div>
-                  {Object.keys(learnedPrefs.provider_counts).length > 1 && (
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {Object.entries(learnedPrefs.provider_counts).map(([prov, count]) => (
-                        <span key={prov} className="font-mono text-[9px] px-2 py-0.5 bg-paper-2 text-muted rounded">
-                          {prov}: {count}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Preferred design theme */}
-              {learnedPrefs.preferred_design_theme && (
-                <div className="border border-rule rounded-[10px] p-4">
-                  <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-2 mb-1.5">Preferred Design Theme</div>
-                  <div className="text-[14px] font-medium text-ink" style={{ fontFamily: "var(--font-display)" }}>
-                    {learnedPrefs.preferred_design_theme}
-                  </div>
-                  {Object.keys(learnedPrefs.design_theme_counts).length > 1 && (
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {Object.entries(learnedPrefs.design_theme_counts).map(([theme, count]) => (
-                        <span key={theme} className="font-mono text-[9px] px-2 py-0.5 bg-paper-2 text-muted rounded">
-                          {theme}: {count}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Refinement feedback */}
-              {learnedPrefs.refinement_feedback_count > 0 && (
-                <div className="border border-rule rounded-[10px] p-4">
-                  <div className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted-2 mb-1.5">Refinement Feedback</div>
-                  <div className="text-[14px] font-medium text-ink" style={{ fontFamily: "var(--font-display)" }}>
-                    {learnedPrefs.refinement_feedback_count} feedback items
-                  </div>
-                </div>
-              )}
-            </div>
+          {memoryInsights && memoryCount > 0 ? (
+            <MemoryPanelBody insights={memoryInsights} />
           ) : (
-            <p className="text-[13px] text-muted leading-[1.5] text-center max-w-[380px] mx-auto">
-              As you run analyses, the agent will learn your preferences for report types, design themes, and refinement patterns.
+            <p className="text-[13px] text-muted leading-[1.5] text-center max-w-[420px] mx-auto py-6">
+              No runs analyzed yet. As you run analyses, the agent will learn your preferences
+              for report types, design themes, and refinement patterns.
             </p>
           )}
+
+          {/* Reset memory section */}
+          <div className="border-t border-rule mt-6 pt-5">
+            {!resetConfirm ? (
+              <button
+                onClick={() => setResetConfirm(true)}
+                disabled={memoryCount === 0}
+                className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted hover:text-pink transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                Reset memory
+              </button>
+            ) : (
+              <div className="bg-pink-soft border border-pink-soft rounded-[8px] p-4 flex items-center gap-3 flex-wrap">
+                <div className="flex-1 min-w-[200px]">
+                  <div className="text-[13px] font-medium text-ink mb-0.5">Reset all learned memory?</div>
+                  <div className="font-mono text-[10px] text-muted">
+                    This clears {memoryCount} runs of preferences and refinement patterns. Cannot be undone.
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setResetConfirm(false)}
+                    disabled={resetting}
+                    className="py-1.5 px-3 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] text-muted border border-rule hover:text-ink transition-colors disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleResetMemory}
+                    disabled={resetting}
+                    className="py-1.5 px-3 rounded-[6px] font-mono text-[10px] uppercase tracking-[0.1em] font-medium text-white bg-pink hover:opacity-90 transition-opacity disabled:opacity-50"
+                  >
+                    {resetting ? "Resetting..." : "Yes, reset"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </OverlayModal>
 

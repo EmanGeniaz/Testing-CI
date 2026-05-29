@@ -10,6 +10,7 @@ so no logic is duplicated.
 """
 
 import os
+import re
 import json
 import time
 import uuid
@@ -760,6 +761,14 @@ def _build_system_prompt(session_id: str, user_prompt: str) -> str:
     except Exception:
         data_summary = "Session data not yet loaded."
 
+    # Load past-run memory context (preferences, refinement patterns, etc.)
+    try:
+        from skill_memory import get_memory_context_for_prompt
+        memory_context = get_memory_context_for_prompt()
+    except Exception as e:
+        log.warning(f"Failed to load memory context for prompt: {e}")
+        memory_context = ""
+
     return f"""You are an expert Consumer Intelligence orchestrator. Your job is to analyze
 data and produce actionable insights based on the user's request.
 
@@ -783,6 +792,8 @@ You can reference these when deciding how to acquire data or generate design ass
 
 ## Current Session Data
 {data_summary}
+
+{memory_context}
 
 ## Research Methodology
 {methodology_text}
@@ -922,6 +933,11 @@ async def run_orchestrator(
 
     system_prompt = _build_system_prompt(session_id, user_prompt)
 
+    # Track timing and user-refinement feedback across the run so we can record
+    # a richer outcome at the end (see skill_memory.record_run_outcome).
+    run_started_at = time.time()
+    collected_refinements: list[str] = []
+
     # Initial messages
     messages = [
         {
@@ -977,13 +993,26 @@ async def run_orchestrator(
 
         for block in assistant_content:
             if block.type == "text":
-                # Emit thinking step
+                # Emit thinking step. Tag with meta="memory" when the model
+                # explicitly invokes past patterns (it can prefix a sentence
+                # with `[memory]` per system-prompt instructions).
                 text = block.text.strip()
                 if text:
-                    yield json.dumps({
-                        "type": "thinking",
-                        "text": text,
-                    }) + "\n"
+                    meta = None
+                    cleaned = text
+                    # Strip a leading [memory] tag (optionally with surrounding
+                    # whitespace) and mark the event so the UI can highlight it.
+                    if cleaned.lower().startswith("[memory]"):
+                        meta = "memory"
+                        cleaned = cleaned[len("[memory]"):].lstrip()
+                    elif "[memory]" in cleaned.lower():
+                        # Tag was inline rather than leading — still mark it.
+                        meta = "memory"
+                        cleaned = re.sub(r"\[memory\]\s*", "", cleaned, flags=re.IGNORECASE)
+                    event = {"type": "thinking", "text": cleaned}
+                    if meta:
+                        event["meta"] = meta
+                    yield json.dumps(event) + "\n"
 
             elif block.type == "tool_use":
                 tool_use_blocks.append(block)
@@ -1027,7 +1056,7 @@ async def run_orchestrator(
 
                 # Auto-learn from successful run
                 try:
-                    from skill_memory import save_run_as_skill
+                    from skill_memory import save_run_as_skill, record_run_outcome
                     run_meta = {
                         "status": session.get("status", "complete"),
                         "report_type": session.get("report_type", ""),
@@ -1036,6 +1065,46 @@ async def run_orchestrator(
                         "provider": "anthropic",
                     }
                     save_run_as_skill(session_id, run_meta)
+
+                    # Record the richer outcome (duration, refinements, dataset hints).
+                    try:
+                        findings = []
+                        if isinstance(report, dict):
+                            findings = (
+                                report.get("findings")
+                                or report.get("themes")
+                                or []
+                            )
+                        high_conf = []
+                        if isinstance(findings, list):
+                            for f in findings:
+                                if isinstance(f, dict):
+                                    conf = f.get("confidence") or f.get("score")
+                                    name = f.get("name") or f.get("title") or f.get("theme")
+                                    if name and (
+                                        (isinstance(conf, (int, float)) and conf >= 0.7)
+                                        or (isinstance(conf, str) and conf.lower() in ("high", "very high"))
+                                    ):
+                                        high_conf.append(str(name))
+
+                        outcome = {
+                            "report_type": session.get("report_type", ""),
+                            "provider": "anthropic",
+                            "model": model,
+                            "duration_seconds": time.time() - run_started_at,
+                            "findings_count": len(findings) if isinstance(findings, list) else None,
+                            "high_confidence_themes": high_conf,
+                            "refinements": collected_refinements,
+                            "user_prompt": user_prompt,
+                            "additional_context": (session.get("dataset_context", {}) or {}).get("additional_context", ""),
+                            "dataset": {
+                                "row_count": len(session.get("raw_data", []) or []),
+                                "type": (session.get("dataset_context", {}) or {}).get("dataset_type"),
+                            },
+                        }
+                        record_run_outcome(session_id, outcome)
+                    except Exception as outcome_err:
+                        log.warning(f"record_run_outcome failed (non-fatal): {outcome_err}")
                 except Exception as learn_err:
                     log.warning(f"Skill auto-learning from orchestrator failed (non-fatal): {learn_err}")
 
@@ -1130,6 +1199,7 @@ async def run_orchestrator(
 
                 # Feed the result (possibly with refinement feedback) back to the model
                 if decision["action"] == "refine" and decision["feedback"]:
+                    collected_refinements.append(decision["feedback"])
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_block.id,

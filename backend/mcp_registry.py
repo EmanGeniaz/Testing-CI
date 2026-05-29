@@ -163,6 +163,8 @@ class MCPRegistry:
     def __init__(self, config_path: Path):
         self.config_path = config_path
         self._state: dict = {}
+        # Live connector instances keyed by connector_id (built on enable).
+        self._instances: dict = {}
         self._load()
 
     # ── persistence ──────────────────────────────────────────────────────────
@@ -251,6 +253,18 @@ class MCPRegistry:
         if missing:
             raise ValueError(f"Missing required fields: {', '.join(missing)}")
 
+        # Build a live instance for connectors that have one and validate
+        # credentials by calling test_connection() before persisting state.
+        instance = self._build_instance(connector_id, config)
+        if instance is not None:
+            try:
+                ok, message = instance.test_connection()
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(f"Connector test failed: {exc}") from exc
+            if not ok:
+                raise ValueError(message or "Connector credentials rejected")
+            self._instances[connector_id] = instance
+
         self._state[connector_id] = {
             "enabled": True,
             "config": config,
@@ -272,6 +286,8 @@ class MCPRegistry:
             self._state[connector_id]["enabled"] = False
         else:
             self._state[connector_id] = {"enabled": False, "config": {}}
+        # Drop any live instance — credentials may change before re-enabling.
+        self._instances.pop(connector_id, None)
         self._save()
         log.info("MCP connector disabled: %s", connector_id)
         return self.get_connector(connector_id)
@@ -279,6 +295,48 @@ class MCPRegistry:
     def get_active_connectors(self) -> list[dict]:
         """Return only enabled connectors -- used by the orchestrator."""
         return [c for c in self.list_connectors() if c.get("enabled")]
+
+    # ── live instance management ─────────────────────────────────────────
+
+    def _build_instance(self, connector_id: str, config: dict):
+        """Construct a DataConnector instance for connectors that ship one.
+
+        Returns None for connectors that don't have a concrete implementation
+        yet — they're still allowed to be "enabled" so the UI can reflect
+        intent, but no live API client is created.
+        """
+        if connector_id == "reddit":
+            from connectors.reddit import RedditConnector
+            return RedditConnector(
+                client_id=config.get("client_id", ""),
+                client_secret=config.get("client_secret", ""),
+                subreddits=config.get("subreddits", ""),
+            )
+        if connector_id == "news_api":
+            from connectors.news_api import NewsAPIConnector
+            return NewsAPIConnector(api_key=config.get("api_key", ""))
+        return None
+
+    def get_active_connector_instance(self, connector_id: str):
+        """Return the live DataConnector for an enabled connector, or None.
+
+        Rebuilds the instance lazily from persisted config if the registry was
+        re-instantiated (e.g. after a server restart).
+        """
+        state = self._connector_state(connector_id)
+        if not state.get("enabled"):
+            return None
+        inst = self._instances.get(connector_id)
+        if inst is not None:
+            return inst
+        try:
+            inst = self._build_instance(connector_id, state.get("config", {}))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Failed to rebuild connector %s: %s", connector_id, exc)
+            return None
+        if inst is not None:
+            self._instances[connector_id] = inst
+        return inst
 
     def test_connector(self, connector_id: str) -> dict:
         """Test if a connector's credentials work (placeholder for now)."""
@@ -294,7 +352,16 @@ class MCPRegistry:
                 "message": "Connector is not enabled. Enable it first.",
             }
 
-        # Placeholder: in production this would make a real API call.
+        # Prefer a real connectivity probe via the live instance.
+        instance = self.get_active_connector_instance(connector_id)
+        if instance is not None:
+            try:
+                ok, message = instance.test_connection()
+            except Exception as exc:  # noqa: BLE001
+                ok, message = False, f"Test raised: {exc}"
+            return {"connector_id": connector_id, "success": ok, "message": message}
+
+        # No concrete implementation yet — fall back to "creds present" check.
         config = state.get("config", {})
         has_all_keys = all(
             bool(config.get(field["key"]))
@@ -306,14 +373,13 @@ class MCPRegistry:
             return {
                 "connector_id": connector_id,
                 "success": True,
-                "message": f"Credentials for {connector['name']} look valid (connectivity test is a placeholder).",
+                "message": f"Credentials for {connector['name']} look valid (no live probe available).",
             }
-        else:
-            return {
-                "connector_id": connector_id,
-                "success": False,
-                "message": "Some required credentials are missing.",
-            }
+        return {
+            "connector_id": connector_id,
+            "success": False,
+            "message": "Some required credentials are missing.",
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

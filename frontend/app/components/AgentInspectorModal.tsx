@@ -9,6 +9,8 @@ import {
   getReportTypes,
   getStatus,
   getResults,
+  getActiveMCPConnectors,
+  searchConnectorToSession,
   type ReportTypeInfo,
 } from "../lib/api";
 
@@ -127,6 +129,9 @@ export default function AgentInspectorModal({
   /* report */
   const [report, setReport] = useState<Record<string, unknown> | null>(null);
   const [taggedData, setTaggedData] = useState<Record<string, unknown>[]>([]);
+
+  /* memory-tagged thoughts streamed from the orchestrator */
+  const [memoryThoughts, setMemoryThoughts] = useState<string[]>([]);
 
   /* ── effects ──────────────────────────────────────────────────────── */
 
@@ -257,10 +262,49 @@ export default function AgentInspectorModal({
 
   /* ── upload ───────────────────────────────────────────────────────── */
 
+  /** Banner shown after a successful connector pull. */
+  const [connectorPullBanner, setConnectorPullBanner] = useState<string>("");
+
+  const handleConnectorPull = useCallback(
+    async (
+      connectorId: string,
+      connectorName: string,
+      query: string,
+      limit: number,
+      filters: Record<string, unknown>,
+    ) => {
+      setError("");
+      setUploading(true);
+      try {
+        const res = await searchConnectorToSession(connectorId, query, limit, filters);
+        // Create a virtual File so the existing "uploaded" UI lights up.
+        const virtualFile = new File([""], res.filename, { type: "application/json" });
+        setFile(virtualFile);
+        setColumns(res.columns);
+        setRowCount(res.row_count);
+        setSessionId(res.session_id);
+        setPrimaryCol("text"); // standardized connector schema
+        setConnectorPullBanner(
+          `✓ Pulled ${res.row_count} rows from ${connectorName} · query: ${query}`
+        );
+        updateSubAgent(1, {
+          status: "complete",
+          meta: `${res.row_count} rows · ${connectorName}`,
+        });
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : "Connector pull failed");
+      } finally {
+        setUploading(false);
+      }
+    },
+    [updateSubAgent]
+  );
+
   const handleFile = useCallback(async (f: File) => {
     setFile(f);
     setError("");
     setUploading(true);
+    setConnectorPullBanner("");
     try {
       const res = await uploadFile(f);
       setColumns(res.columns);
@@ -289,6 +333,7 @@ export default function AgentInspectorModal({
     setReport(null);
     setProgress(0);
     setAnalyzedRows(0);
+    setMemoryThoughts([]);
 
     // start elapsed timer
     startTimeRef.current = Date.now();
@@ -348,7 +393,9 @@ export default function AgentInspectorModal({
           if (!line.trim()) continue;
           try {
             const ev = JSON.parse(line);
-            if (ev.type === "tool_call" && typeof ev.tool === "string") {
+            if (ev.type === "thinking" && ev.meta === "memory" && typeof ev.text === "string") {
+              setMemoryThoughts(prev => [...prev, ev.text]);
+            } else if (ev.type === "tool_call" && typeof ev.tool === "string") {
               markToolRunning(ev.tool);
             } else if (ev.type === "tool_result" && typeof ev.tool === "string") {
               markToolComplete(ev.tool, ev.result);
@@ -584,6 +631,30 @@ export default function AgentInspectorModal({
           </div>
         </div>
 
+        {/* MEMORY RIBBON — shown when the orchestrator invokes past patterns */}
+        {memoryThoughts.length > 0 && (
+          <div
+            className="border-b border-rule px-6 py-2.5 flex items-start gap-3"
+            style={{ background: "var(--color-purple-soft)" }}
+          >
+            <span
+              className="font-mono text-[9px] uppercase tracking-[0.12em] font-semibold px-1.5 py-0.5 rounded flex-shrink-0 mt-0.5"
+              style={{ background: "var(--color-purple)", color: "white" }}
+              title="The agent is applying patterns learned from your past runs"
+            >
+              Memory
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="font-mono text-[9px] uppercase tracking-[0.1em] text-muted-2 mb-0.5">
+                Applying {memoryThoughts.length} past-run pattern{memoryThoughts.length === 1 ? "" : "s"}
+              </div>
+              <div className="text-[12.5px] leading-[1.5] text-ink-2 line-clamp-2">
+                {memoryThoughts[memoryThoughts.length - 1]}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* BODY */}
         <div className="grid overflow-hidden min-h-0" style={{ gridTemplateColumns: "320px 1fr" }}>
           {/* PIPELINE LEFT */}
@@ -631,6 +702,8 @@ export default function AgentInspectorModal({
                   if (f) handleFile(f);
                 }}
                 onFile={handleFile}
+                onConnectorPull={handleConnectorPull}
+                connectorPullBanner={connectorPullBanner}
               />
             ) : (
               <SubAgentDetail
@@ -777,6 +850,8 @@ function DataPane({
   onDragLeave,
   onDrop,
   onFile,
+  onConnectorPull,
+  connectorPullBanner,
 }: {
   dragging: boolean;
   uploading: boolean;
@@ -796,7 +871,26 @@ function DataPane({
   onDragLeave: () => void;
   onDrop: (e: React.DragEvent) => void;
   onFile: (f: File) => void;
+  onConnectorPull: (
+    connectorId: string,
+    connectorName: string,
+    query: string,
+    limit: number,
+    filters: Record<string, unknown>,
+  ) => void;
+  connectorPullBanner: string;
 }) {
+  /* Active connectors → which cards unlock. */
+  const [enabledConnectorIds, setEnabledConnectorIds] = useState<Set<string>>(new Set());
+  const [pullFormFor, setPullFormFor] = useState<string | null>(null);
+
+  useEffect(() => {
+    getActiveMCPConnectors()
+      .then(res => {
+        setEnabledConnectorIds(new Set(res.connectors.map(c => c.id)));
+      })
+      .catch(() => {});
+  }, []);
   const DATA_SOURCES: { category: string; sources: { id: string; name: string; icon: string; available: boolean }[] }[] = [
     {
       category: "Social Listening Platforms",
@@ -935,6 +1029,20 @@ function DataPane({
         )}
       </div>
 
+      {/* Connector pull success banner */}
+      {connectorPullBanner && (
+        <div
+          className="mb-4 px-3 py-2.5 text-[12px] rounded-lg border"
+          style={{
+            background: "var(--color-green-soft)",
+            color: "var(--color-green)",
+            borderColor: "var(--color-green)",
+          }}
+        >
+          {connectorPullBanner}
+        </div>
+      )}
+
       {/* Connector Sources */}
       {DATA_SOURCES.map(group => (
         <div key={group.category} className="bg-white border border-rule rounded-[12px] p-4 mb-3">
@@ -942,18 +1050,56 @@ function DataPane({
             {group.category}
           </div>
           <div className="grid grid-cols-2 gap-2">
-            {group.sources.map(src => (
-              <div key={src.id}
-                className="flex items-center gap-2.5 px-3 py-2 border border-rule rounded-[8px] bg-paper/50 cursor-not-allowed opacity-70"
-                title="Coming soon — configure in MCP panel"
-              >
-                <span className="text-[15px]">{src.icon}</span>
-                <span className="text-[12px] text-ink-3 flex-1">{src.name}</span>
-                <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted-2">
-                  <rect x="3" y="6" width="8" height="6" rx="1"/><path d="M5 6V4a2 2 0 014 0v2"/>
-                </svg>
-              </div>
-            ))}
+            {group.sources.map(src => {
+              const unlocked = enabledConnectorIds.has(src.id);
+              const formOpen = pullFormFor === src.id;
+              return (
+                <div key={src.id} className={formOpen ? "col-span-2" : ""}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!unlocked) return;
+                      setPullFormFor(formOpen ? null : src.id);
+                    }}
+                    disabled={!unlocked}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 border rounded-[8px] transition-all ${
+                      unlocked
+                        ? "border-purple-rule bg-purple-soft/40 hover:bg-purple-soft cursor-pointer"
+                        : "border-rule bg-paper/50 cursor-not-allowed opacity-70"
+                    }`}
+                    title={unlocked ? "Pull data via this connector" : "Coming soon — configure in MCP panel"}
+                  >
+                    <span className="text-[15px]">{src.icon}</span>
+                    <span className={`text-[12px] flex-1 text-left ${unlocked ? "text-ink" : "text-ink-3"}`}>
+                      {src.name}
+                    </span>
+                    {unlocked ? (
+                      <span
+                        className="font-mono text-[9px] uppercase tracking-[0.1em] px-1.5 py-0.5 rounded font-semibold"
+                        style={{ background: "var(--color-green-soft)", color: "var(--color-green)" }}
+                      >
+                        Live
+                      </span>
+                    ) : (
+                      <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted-2">
+                        <rect x="3" y="6" width="8" height="6" rx="1"/><path d="M5 6V4a2 2 0 014 0v2"/>
+                      </svg>
+                    )}
+                  </button>
+                  {formOpen && unlocked && (
+                    <ConnectorPullForm
+                      connectorId={src.id}
+                      connectorName={src.name}
+                      busy={uploading}
+                      onCancel={() => setPullFormFor(null)}
+                      onSubmit={(query, limit, filters) =>
+                        onConnectorPull(src.id, src.name, query, limit, filters)
+                      }
+                    />
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       ))}
@@ -1041,6 +1187,128 @@ function DataPane({
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/* ── Connector pull form (inline, expands inside DataPane) ──────────── */
+
+function ConnectorPullForm({
+  connectorId,
+  connectorName,
+  busy,
+  onSubmit,
+  onCancel,
+}: {
+  connectorId: string;
+  connectorName: string;
+  busy: boolean;
+  onSubmit: (query: string, limit: number, filters: Record<string, unknown>) => void;
+  onCancel: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [limit, setLimit] = useState(100);
+  const [dateFrom, setDateFrom] = useState("");
+  const [subreddit, setSubreddit] = useState("all");
+
+  const isReddit = connectorId === "reddit";
+  const isNews = connectorId === "news_api";
+
+  const submit = () => {
+    const q = query.trim();
+    if (!q) return;
+    const filters: Record<string, unknown> = {};
+    if (isReddit) {
+      if (subreddit) filters.subreddit = subreddit;
+    }
+    if (isNews && dateFrom) {
+      filters.from_date = dateFrom;
+    }
+    onSubmit(q, limit, filters);
+  };
+
+  return (
+    <div className="mt-2 p-3 border border-purple-rule rounded-[8px] bg-white space-y-3">
+      <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-2 font-semibold">
+        Pull from {connectorName}
+      </div>
+
+      <div>
+        <label className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted block mb-1">
+          Query
+        </label>
+        <input
+          type="text"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder="e.g. HPP patient experience"
+          className="w-full px-2.5 py-1.5 text-[12px] border border-rule rounded-[6px] bg-paper focus:border-purple focus:bg-white focus:shadow-[0_0_0_3px_var(--color-purple-soft)] outline-none"
+        />
+      </div>
+
+      <div>
+        <label className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted block mb-1">
+          Rows: {limit}
+        </label>
+        <input
+          type="range"
+          min={50}
+          max={500}
+          step={10}
+          value={limit}
+          onChange={e => setLimit(parseInt(e.target.value, 10))}
+          className="w-full"
+        />
+      </div>
+
+      {isReddit && (
+        <div>
+          <label className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted block mb-1">
+            Subreddit
+          </label>
+          <input
+            type="text"
+            value={subreddit}
+            onChange={e => setSubreddit(e.target.value)}
+            placeholder="all"
+            className="w-full px-2.5 py-1.5 text-[12px] border border-rule rounded-[6px] bg-paper focus:border-purple focus:bg-white outline-none"
+          />
+        </div>
+      )}
+
+      {isNews && (
+        <div>
+          <label className="font-mono text-[9px] uppercase tracking-[0.12em] text-muted block mb-1">
+            From date
+          </label>
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={e => setDateFrom(e.target.value)}
+            className="w-full px-2.5 py-1.5 text-[12px] border border-rule rounded-[6px] bg-paper focus:border-purple focus:bg-white outline-none"
+          />
+        </div>
+      )}
+
+      <div className="flex items-center justify-end gap-2 pt-1">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted hover:text-ink px-2.5 py-1.5 border border-rule rounded-[6px]"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={submit}
+          disabled={busy || !query.trim()}
+          className="font-mono text-[10px] uppercase tracking-[0.12em] text-white px-3 py-1.5 rounded-[6px] disabled:opacity-50"
+          style={{ background: "linear-gradient(135deg, var(--color-purple), var(--color-pink))" }}
+        >
+          {busy ? "Pulling…" : "Pull data"}
+        </button>
+      </div>
     </div>
   );
 }
