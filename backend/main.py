@@ -2604,7 +2604,7 @@ def api_connector_search(connector_id: str, payload: ConnectorSearchPayload):
 
 
 @app.post("/connectors/{connector_id}/search-to-session")
-def api_connector_search_to_session(connector_id: str, payload: ConnectorSearchPayload):
+def api_connector_search_to_session(connector_id: str, payload: ConnectorSearchPayload, user_id: str = Depends(current_user)):
     """Run a connector search and load the rows as a new analysis session.
 
     This is the path the frontend uses to "pull data" from Reddit/News into
@@ -2622,8 +2622,7 @@ def api_connector_search_to_session(connector_id: str, payload: ConnectorSearchP
     filename = f"{connector_id}-{safe_q}.json"
 
     session_id = str(uuid.uuid4())
-    db = load_db()
-    db["sessions"][session_id] = {
+    session_blob = {
         "session_id": session_id,
         "filename":   filename,
         "columns":    columns,
@@ -2644,7 +2643,7 @@ def api_connector_search_to_session(connector_id: str, payload: ConnectorSearchP
             "filters": payload.filters,
         },
     }
-    save_db(db)
+    update_session(session_id, session_blob, user_id=user_id)
     save_snapshot()
     log.info(
         "Connector %s → session %s · query=%r · rows=%d",
@@ -2787,6 +2786,33 @@ def api_trigger_snapshot():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  SHARE LINKS — public read-only access to a session via a token
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@app.post("/sessions/{sid}/share")
+async def create_share(sid: str, user_id: str = Depends(current_user)):
+    """Mint a share-link token for a session. Returns the token + a relative URL."""
+    # Make sure the session actually belongs to this user before sharing.
+    get_session(sid, user_id=user_id)
+    import db as _db
+    token = _db.create_share_link(sid, user_id)
+    if not token:
+        raise HTTPException(status_code=500, detail="Failed to create share link")
+    return {"token": token, "url": f"/shared/{token}"}
+
+
+@app.get("/shared/{token}")
+async def get_shared(token: str):
+    """Public endpoint — look up a session via its share token. No auth required."""
+    import db as _db
+    session = _db.get_session_from_share_link(token)
+    if not session:
+        raise HTTPException(status_code=404, detail="Share link not found or expired")
+    return session
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  DEMO RUNS
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2798,7 +2824,7 @@ def api_list_demos():
 
 
 @app.post("/demos/{demo_id}/load")
-def api_load_demo(demo_id: str):
+def api_load_demo(demo_id: str, user_id: str = Depends(current_user)):
     """Materialize a demo run into a NEW session for the current user.
 
     A fresh session_id is minted so the demo template stays pristine and
@@ -3028,7 +3054,7 @@ def _compare_synthesis(runs: list[dict], overlaps: dict) -> str:
 
 
 @app.post("/compare")
-def compare_runs(payload: ComparePayload):
+def compare_runs(payload: ComparePayload, user_id: str = Depends(current_user)):
     """Compare 2-4 completed sessions side-by-side.
 
     Loads each session's report + analyzed_data, computes overlaps/divergences
@@ -3040,14 +3066,10 @@ def compare_runs(payload: ComparePayload):
     if len(payload.session_ids) > 4:
         raise HTTPException(status_code=400, detail="Compare at most 4 sessions at a time.")
 
-    db = load_db()
-    sessions_map = db.get("sessions", {})
-
     runs = []
     for sid in payload.session_ids:
-        if sid not in sessions_map:
-            raise HTTPException(status_code=404, detail=f"Session not found: {sid}")
-        runs.append(_compare_extract_run_summary(sid, sessions_map[sid]))
+        sess = get_session(sid, user_id=user_id)
+        runs.append(_compare_extract_run_summary(sid, sess))
 
     overlaps = _compare_overlaps(runs)
     synthesis = _compare_synthesis(runs, overlaps)
