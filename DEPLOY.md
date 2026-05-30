@@ -36,6 +36,21 @@ The repo includes `render.yaml` at the root which Render reads to auto-configure
 
 ---
 
+## Step 1.5 — Provision Supabase (Postgres + Auth)
+
+The backend supports a Supabase Postgres backend with row-level security in place of the legacy `database.json` file. If you skip this step the app falls back to the JSON-file storage and stays usable for local dev, but you won't get multi-user isolation or share links.
+
+1. Create a project at https://supabase.com → grab the **Project URL** (`https://<project>.supabase.co`) and the **service role key** (Project Settings → API → `service_role` secret).
+2. Open the **SQL editor** in the Supabase dashboard and run the contents of `backend/db_schema.sql` once. This creates the `workspaces`, `sessions`, `runs`, `mcp_configs`, `user_memory`, and `share_links` tables and enables row-level security so each user only sees their own data.
+3. In the Supabase dashboard → **Storage** → **New bucket**, create a private bucket named `uploads` (or run the commented-out `insert into storage.buckets ...` line at the bottom of `db_schema.sql`).
+4. In Render → service → **Environment**, add:
+   - `SUPABASE_URL` — your project URL
+   - `SUPABASE_SERVICE_KEY` — the service role key from step 1
+   - `SUPABASE_JWT_SECRET` — Project Settings → API → **JWT Secret** (used to verify Supabase Auth JWTs offline; without it the backend falls back to calling Supabase to validate every request, which is slower).
+5. Redeploy the backend. On startup it auto-detects Supabase via `SUPABASE_URL` and routes all session/run writes to Postgres. Requests now require a Supabase auth `Authorization: Bearer <jwt>` header; the frontend supplies this once a user signs in.
+
+---
+
 ## Step 2 — Deploy the frontend on Vercel
 
 1. Vercel dashboard → **Add New** → **Project**.
