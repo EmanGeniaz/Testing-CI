@@ -18,3 +18,5 @@ python-dotenv>=1.0.0
 orjson>=3.10
 requests>=2.31
 praw>=7.7
+supabase>=2.10
+pyjwt>=2.8

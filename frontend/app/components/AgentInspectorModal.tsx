@@ -11,6 +11,7 @@ import {
   getResults,
   getActiveMCPConnectors,
   searchConnectorToSession,
+  getAuthHeader,
   type ReportTypeInfo,
 } from "../lib/api";
 
@@ -224,7 +225,7 @@ export default function AgentInspectorModal({
       try {
         const res = await fetch(`${BASE}/orchestrate/${sessionId}/continue`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...(await getAuthHeader()) },
           body: JSON.stringify({ action, feedback }),
         });
         if (!res.ok) throw new Error(`continue failed (${res.status})`);
@@ -354,7 +355,7 @@ export default function AgentInspectorModal({
     try {
       const res = await fetch(`${BASE}/orchestrate`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await getAuthHeader()) },
         body: JSON.stringify({
           session_id: sessionId,
           prompt: userPrompt,
@@ -499,7 +500,7 @@ export default function AgentInspectorModal({
             const res = await getResults(sid);
             setTaggedData(res.analyzed_data ?? []);
             try {
-              const reportRes = await fetch(`${BASE}/session/${sid}/generate-report`, { method: "POST" });
+              const reportRes = await fetch(`${BASE}/session/${sid}/generate-report`, { method: "POST", headers: await getAuthHeader() });
               if (reportRes.ok) {
                 const reportData = await reportRes.json();
                 setReport(reportData);

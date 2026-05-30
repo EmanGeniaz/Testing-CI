@@ -1,3 +1,5 @@
+import { getSupabaseBrowserClient } from "./supabase/client";
+
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const log = (msg: string, data?: unknown) => {
@@ -6,10 +8,37 @@ const log = (msg: string, data?: unknown) => {
   else console.log(`[E-AI ${ts}] ${msg}`);
 };
 
+/**
+ * Returns `{ Authorization: "Bearer <token>" }` for the current Supabase
+ * session, or an empty object if there is no session (server-side render,
+ * not signed in, or Supabase env not configured).
+ */
+export async function getAuthHeader(): Promise<Record<string, string>> {
+  if (typeof window === "undefined") return {};
+  try {
+    const supabase = getSupabaseBrowserClient();
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Merge auth + caller headers without losing either. */
+async function mergeAuthHeaders(extra?: HeadersInit): Promise<HeadersInit> {
+  const auth = await getAuthHeader();
+  if (!extra) return auth;
+  const merged = new Headers(extra);
+  for (const [k, v] of Object.entries(auth)) merged.set(k, v);
+  return merged;
+}
+
 async function apiFetch(url: string, opts?: RequestInit) {
   log(`→ ${opts?.method ?? "GET"} ${url}`);
   try {
-    const res = await fetch(url, opts);
+    const headers = await mergeAuthHeaders(opts?.headers);
+    const res = await fetch(url, { ...opts, headers });
     if (!res.ok) {
       const body = await res.text();
       log(`✗ ${res.status} ${url}`, body);
@@ -28,7 +57,12 @@ export async function uploadFile(file: File) {
   log(`Uploading file: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`);
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${BASE}/upload`, { method: "POST", body: form });
+  const headers = await mergeAuthHeaders();
+  const res = await fetch(`${BASE}/upload`, {
+    method: "POST",
+    body: form,
+    headers,
+  });
   if (!res.ok) {
     const body = await res.text();
     log(`✗ Upload failed ${res.status}`, body);
@@ -90,13 +124,15 @@ export async function getReportTypes(): Promise<{ report_types: ReportTypeInfo[]
 }
 
 export async function getStatus(session_id: string) {
-  const res = await fetch(`${BASE}/session/${session_id}/status`);
+  const headers = await mergeAuthHeaders();
+  const res = await fetch(`${BASE}/session/${session_id}/status`, { headers });
   if (!res.ok) throw new Error(`Status check failed: ${res.status}`);
   return res.json();
 }
 
 export async function getResults(session_id: string) {
-  const res = await fetch(`${BASE}/session/${session_id}/results`);
+  const headers = await mergeAuthHeaders();
+  const res = await fetch(`${BASE}/session/${session_id}/results`, { headers });
   if (!res.ok) throw new Error(`Results fetch failed: ${res.status}`);
   return res.json();
 }

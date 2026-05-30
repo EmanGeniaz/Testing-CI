@@ -8,6 +8,7 @@ import WorkbenchTab from "./components/WorkbenchTab";
 import ExportTab from "./components/ExportTab";
 import RunHistory from "./components/RunHistory";
 import CompareView from "./components/CompareView";
+import UserMenu from "./components/UserMenu";
 
 type View = "agents" | "workbench" | "export" | "history" | "compare";
 
@@ -129,12 +130,15 @@ export default function Home() {
               </>
             )}
           </div>
-          <div className="ml-auto flex items-center gap-3.5">
-            {sessionId && (
-              <span className="font-mono text-[10px] text-muted-2 bg-paper-2 px-2.5 py-1 rounded border border-rule">
-                {sessionId.slice(0, 8)}
-              </span>
-            )}
+          <div className="ml-auto flex flex-col items-end gap-1.5">
+            <div className="flex items-center gap-3.5">
+              {sessionId && (
+                <span className="font-mono text-[10px] text-muted-2 bg-paper-2 px-2.5 py-1 rounded border border-rule">
+                  {sessionId.slice(0, 8)}
+                </span>
+              )}
+              <UserMenu />
+            </div>
             <div className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted flex items-center gap-1.5 px-2.5 py-1 bg-green-soft rounded-xl text-green">
               <span className="w-[5px] h-[5px] rounded-full bg-green" />
               Agent ready

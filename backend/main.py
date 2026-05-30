@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / ".env")
 
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Depends
 from fastapi.responses import StreamingResponse, JSONResponse, ORJSONResponse
 from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -218,14 +218,51 @@ def save_db(d) -> None:  _write_json(DB_PATH, d)
 def load_runs() -> dict: return _read_json(RUNS_PATH, {"runs": []})
 def save_runs(d) -> None: _write_json(RUNS_PATH, d)
 
-def get_session(session_id: str) -> dict:
+def get_session(session_id: str, user_id: Optional[str] = None) -> dict:
+    """Fetch a session by id.
+
+    When Supabase is configured and a ``user_id`` is supplied, the session is
+    scoped to that user (cross-user access raises 404). Without Supabase, we
+    fall back to the JSON-file store and ignore the user_id.
+    """
+    # Supabase-backed path
+    try:
+        from supabase_client import is_configured as _supa_ok
+    except Exception:
+        _supa_ok = lambda: False  # noqa: E731
+    if _supa_ok() and user_id:
+        import db as _db
+        s = _db.get_session(session_id, user_id)
+        if not s:
+            log.warning(f"Session not found: {session_id}")
+            raise HTTPException(status_code=404, detail="Session not found")
+        return s
+
     db = load_db()
     if session_id not in db["sessions"]:
         log.warning(f"Session not found: {session_id}")
         raise HTTPException(status_code=404, detail="Session not found")
     return db["sessions"][session_id]
 
-def update_session(session_id: str, payload: dict):
+def update_session(session_id: str, payload: dict, user_id: Optional[str] = None):
+    """Patch a session.
+
+    Mirrors ``get_session``: when Supabase is configured and a user_id is
+    provided, the patch is routed through the DB; otherwise we update the
+    legacy JSON store.
+    """
+    try:
+        from supabase_client import is_configured as _supa_ok
+    except Exception:
+        _supa_ok = lambda: False  # noqa: E731
+    if _supa_ok() and user_id:
+        import db as _db
+        existing = _db.get_session(session_id, user_id) or {}
+        existing.update(payload)
+        existing["updated_at"] = datetime.utcnow().isoformat()
+        _db.save_session(session_id, user_id, existing)
+        return
+
     db = load_db()
     if session_id not in db["sessions"]:
         db["sessions"][session_id] = {}
@@ -233,6 +270,19 @@ def update_session(session_id: str, payload: dict):
     # Track last-update time so /sessions can sort by recency
     db["sessions"][session_id]["updated_at"] = datetime.utcnow().isoformat()
     save_db(db)
+
+
+# ── Auth dependency wiring ─────────────────────────────────────────────────────
+# Import here so we can use Depends(current_user) below.
+try:
+    from auth import current_user, current_user_optional  # noqa: E402
+    import db as _supabase_db  # noqa: E402,F401
+except Exception as _auth_imp_err:  # pragma: no cover
+    log.warning(f"Auth/db import failed (running unauthenticated): {_auth_imp_err}")
+    async def current_user(authorization: Optional[str] = None) -> str:  # type: ignore
+        return "local-anon-user"
+    async def current_user_optional(authorization: Optional[str] = None) -> Optional[str]:  # type: ignore
+        return "local-anon-user"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  LLM FACTORY  (falls back to .env if no key passed)
@@ -480,7 +530,7 @@ def _cleanse_data(raw_data: list, text_col: str) -> tuple[list, dict]:
 
 def _run_tagging_bg(session_id: str, provider: str, api_key: str,
                     model: Optional[str], session: dict, run_id: str,
-                    report_type_id: str):
+                    report_type_id: str, user_id: Optional[str] = None):
     start_time = datetime.utcnow()
     log.info(f"=== RUN {run_id} START | session={session_id} provider={provider} model={model} report_type={report_type_id} ===")
 
@@ -601,7 +651,7 @@ def _run_tagging_bg(session_id: str, provider: str, api_key: str,
                             "analyzed_data": _flatten(analyzed),
                             "progress": progress,
                             "status": "running",
-                        })
+                        }, user_id=user_id)
                         log.info(f"Run {run_id}: {completed}/{total} ({progress}%)")
                     except Exception as e:
                         orig_idx = futures[fut]
@@ -622,7 +672,7 @@ def _run_tagging_bg(session_id: str, provider: str, api_key: str,
             "status": "complete",
             "run_id": run_id,
             "completed_at": datetime.utcnow().isoformat(),
-        })
+        }, user_id=user_id)
 
         # ── Persist run to runs.json index + individual runs/{run_id}.json ──
         run_meta = {
@@ -662,7 +712,7 @@ def _run_tagging_bg(session_id: str, provider: str, api_key: str,
 
     except Exception as e:
         log.error(f"=== RUN {run_id} FAILED: {e}\n{traceback.format_exc()} ===")
-        update_session(session_id, {"status": "error", "error_message": str(e)})
+        update_session(session_id, {"status": "error", "error_message": str(e)}, user_id=user_id)
         err_meta = {
             "run_id": run_id, "session_id": session_id,
             "filename": session.get("filename", ""), "provider": provider,
@@ -693,8 +743,11 @@ def health():
 # ── Upload ─────────────────────────────────────────────────────────────────────
 
 @app.post("/upload", response_class=ORJSONResponse)
-async def upload_file(file: UploadFile = File(...)) -> ORJSONResponse:
-    log.info(f"Upload: {file.filename} content_type={file.content_type}")
+async def upload_file(
+    file: UploadFile = File(...),
+    user_id: str = Depends(current_user),
+) -> ORJSONResponse:
+    log.info(f"Upload: {file.filename} content_type={file.content_type} user={user_id}")
     content = await file.read()
     df = parse_upload(content, file.filename)
 
@@ -703,8 +756,7 @@ async def upload_file(file: UploadFile = File(...)) -> ORJSONResponse:
     preview  = df_to_clean_records(df.head(4))
 
     session_id = str(uuid.uuid4())
-    db = load_db()
-    db["sessions"][session_id] = {
+    session_blob = {
         "session_id": session_id,
         "filename":   file.filename,
         "columns":    columns,
@@ -716,7 +768,8 @@ async def upload_file(file: UploadFile = File(...)) -> ORJSONResponse:
         "status":     "uploaded",
         "created_at": datetime.utcnow().isoformat(),
     }
-    save_db(db)
+    # Persist via the shared helper so the Supabase path is taken when configured.
+    update_session(session_id, session_blob, user_id=user_id)
     save_snapshot()
     log.info(f"Uploaded: session={session_id} rows={len(records)} cols={columns}")
 
@@ -738,9 +791,9 @@ class DatasetContextPayload(BaseModel):
     additional_context: str = ""
 
 @app.post("/context")
-def set_context(payload: DatasetContextPayload):
+def set_context(payload: DatasetContextPayload, user_id: str = Depends(current_user)):
     log.info(f"Context set: session={payload.session_id} type={payload.dataset_type}")
-    update_session(payload.session_id, {"dataset_context": payload.model_dump(exclude={"session_id"})})
+    update_session(payload.session_id, {"dataset_context": payload.model_dump(exclude={"session_id"})}, user_id=user_id)
     return {"ok": True}
 
 
@@ -753,9 +806,9 @@ class SchemaConfigPayload(BaseModel):
     ai_columns: list[str] = []
 
 @app.post("/schema")
-def set_schema(payload: SchemaConfigPayload):
+def set_schema(payload: SchemaConfigPayload, user_id: str = Depends(current_user)):
     log.info(f"Schema set: session={payload.session_id} primary_col={payload.primary_text_column}")
-    update_session(payload.session_id, {"schema_config": payload.model_dump(exclude={"session_id"})})
+    update_session(payload.session_id, {"schema_config": payload.model_dump(exclude={"session_id"})}, user_id=user_id)
     return {"ok": True}
 
 
@@ -769,8 +822,8 @@ class RunTaggingPayload(BaseModel):
     report_type: str = DEFAULT_REPORT_TYPE_ID
 
 @app.post("/run-tagging")
-def run_tagging(payload: RunTaggingPayload, background_tasks: BackgroundTasks):
-    session = get_session(payload.session_id)
+def run_tagging(payload: RunTaggingPayload, background_tasks: BackgroundTasks, user_id: str = Depends(current_user)):
+    session = get_session(payload.session_id, user_id=user_id)
     if not session.get("schema_config", {}).get("primary_text_column"):
         raise HTTPException(status_code=400, detail="Schema not configured — set primary_text_column first")
 
@@ -784,11 +837,11 @@ def run_tagging(payload: RunTaggingPayload, background_tasks: BackgroundTasks):
     update_session(payload.session_id, {
         "status": "running", "analyzed_data": [], "progress": 0,
         "run_id": run_id, "report_type": payload.report_type,
-    })
+    }, user_id=user_id)
     background_tasks.add_task(
         _run_tagging_bg,
         payload.session_id, payload.provider, payload.api_key,
-        payload.model, session, run_id, payload.report_type,
+        payload.model, session, run_id, payload.report_type, user_id,
     )
     return {"ok": True, "run_id": run_id, "message": "Tagging started"}
 
@@ -804,8 +857,8 @@ def get_report_types():
 # ── Status / Results ───────────────────────────────────────────────────────────
 
 @app.get("/session/{session_id}/status")
-def get_status(session_id: str):
-    s = get_session(session_id)
+def get_status(session_id: str, user_id: str = Depends(current_user)):
+    s = get_session(session_id, user_id=user_id)
     return {
         "status":        s.get("status", "unknown"),
         "progress":      s.get("progress", 0),
@@ -816,8 +869,8 @@ def get_status(session_id: str):
     }
 
 @app.get("/session/{session_id}/results")
-def get_results(session_id: str):
-    s = get_session(session_id)
+def get_results(session_id: str, user_id: str = Depends(current_user)):
+    s = get_session(session_id, user_id=user_id)
     return {
         "analyzed_data": s.get("analyzed_data", []),
         "columns":       s.get("columns", []),
@@ -825,19 +878,19 @@ def get_results(session_id: str):
     }
 
 @app.get("/session/{session_id}")
-def get_session_data(session_id: str):
-    return get_session(session_id)
+def get_session_data(session_id: str, user_id: str = Depends(current_user)):
+    return get_session(session_id, user_id=user_id)
 
 class RowUpdatePayload(BaseModel):
     col: str
     value: str
 
 @app.patch("/session/{session_id}/row/{row_idx}")
-def update_row(session_id: str, row_idx: int, payload: RowUpdatePayload):
-    session = get_session(session_id)
+def update_row(session_id: str, row_idx: int, payload: RowUpdatePayload, user_id: str = Depends(current_user)):
+    session = get_session(session_id, user_id=user_id)
     if "analyzed_data" not in session or not (0 <= row_idx < len(session["analyzed_data"])):
         raise HTTPException(status_code=404, detail="Row not found")
-    
+
     session["analyzed_data"][row_idx][payload.col] = payload.value
     run_id = session.get("run_id")
     if run_id:
@@ -847,20 +900,20 @@ def update_row(session_id: str, row_idx: int, payload: RowUpdatePayload):
             if "analyzed_data" in run_data and 0 <= row_idx < len(run_data["analyzed_data"]):
                 run_data["analyzed_data"][row_idx][payload.col] = payload.value
                 _write_json(run_file, run_data)
-                
-    update_session(session_id, {"analyzed_data": session["analyzed_data"]})
+
+    update_session(session_id, {"analyzed_data": session["analyzed_data"]}, user_id=user_id)
     return {"ok": True}
 
 
 # ── Run history ────────────────────────────────────────────────────────────────
 
 @app.get("/runs")
-def list_runs():
+def list_runs(user_id: str = Depends(current_user)):
     runs = load_runs()
     return {"runs": runs.get("runs", [])}
 
 @app.get("/runs/{run_id}")
-def get_run(run_id: str):
+def get_run(run_id: str, user_id: str = Depends(current_user)):
     """Return full run data (meta + analyzed_data) from individual run file."""
     run_file = RUNS_DIR / f"{run_id}.json"
     if run_file.exists():
@@ -871,22 +924,22 @@ def get_run(run_id: str):
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     try:
-        s = get_session(run["session_id"])
+        s = get_session(run["session_id"], user_id=user_id)
         return {**run, "analyzed_data": s.get("analyzed_data", []), "columns": s.get("columns", [])}
     except HTTPException:
         return {**run, "analyzed_data": [], "columns": []}
 
 @app.get("/runs/{run_id}/results")
-def get_run_results(run_id: str):
+def get_run_results(run_id: str, user_id: str = Depends(current_user)):
     """Alias for /runs/{run_id} — kept for backwards compatibility."""
-    return get_run(run_id)
+    return get_run(run_id, user_id=user_id)
 
 
 # ── Export ─────────────────────────────────────────────────────────────────────
 
 @app.get("/session/{session_id}/export/csv")
-def export_csv(session_id: str):
-    s    = get_session(session_id)
+def export_csv(session_id: str, user_id: str = Depends(current_user)):
+    s    = get_session(session_id, user_id=user_id)
     data = s.get("analyzed_data", [])
     if not data:
         raise HTTPException(status_code=404, detail="No analyzed data yet")
@@ -898,8 +951,8 @@ def export_csv(session_id: str):
         headers={"Content-Disposition": f'attachment; filename="analysis_{session_id[:8]}.csv"'})
 
 @app.get("/session/{session_id}/export/xlsx")
-def export_xlsx(session_id: str):
-    s    = get_session(session_id)
+def export_xlsx(session_id: str, user_id: str = Depends(current_user)):
+    s    = get_session(session_id, user_id=user_id)
     data = s.get("analyzed_data", [])
     if not data:
         raise HTTPException(status_code=404, detail="No analyzed data yet")
@@ -913,8 +966,8 @@ def export_xlsx(session_id: str):
         headers={"Content-Disposition": f'attachment; filename="analysis_{session_id[:8]}.xlsx"'})
 
 @app.get("/session/{session_id}/export/json")
-def export_json_file(session_id: str):
-    s    = get_session(session_id)
+def export_json_file(session_id: str, user_id: str = Depends(current_user)):
+    s    = get_session(session_id, user_id=user_id)
     data = s.get("analyzed_data", [])
     if not data:
         raise HTTPException(status_code=404, detail="No analyzed data yet")
@@ -924,9 +977,9 @@ def export_json_file(session_id: str):
 
 
 @app.get("/session/{session_id}/export/pptx")
-def export_pptx(session_id: str):
+def export_pptx(session_id: str, user_id: str = Depends(current_user)):
     """Export tagged data as a PPTX table presentation (raw data in slides)."""
-    s = get_session(session_id)
+    s = get_session(session_id, user_id=user_id)
     data = s.get("analyzed_data", [])
     if not data:
         raise HTTPException(status_code=404, detail="No analyzed data yet")
@@ -940,9 +993,9 @@ def export_pptx(session_id: str):
 
 
 @app.get("/session/{session_id}/export/pptx-report")
-def export_pptx_report(session_id: str):
+def export_pptx_report(session_id: str, user_id: str = Depends(current_user)):
     """Export a polished PPTX report presentation generated from tagged analysis data."""
-    session = get_session(session_id)
+    session = get_session(session_id, user_id=user_id)
     analyzed_data = session.get("analyzed_data", [])
     if not analyzed_data:
         raise HTTPException(status_code=404, detail="No analyzed data yet. Run tagging first.")
@@ -1861,7 +1914,7 @@ def _resolve_llm_for_report(session: dict, payload: GenerateReportPayload):
 
 
 @app.post("/session/{session_id}/generate-report")
-def generate_report(session_id: str, payload: GenerateReportPayload = None):
+def generate_report(session_id: str, payload: GenerateReportPayload = None, user_id: str = Depends(current_user)):
     """Generate a structured report from a session's analyzed (tagged) data.
 
     Uses the LLM to synthesize findings if a provider/key is available.
@@ -1870,7 +1923,7 @@ def generate_report(session_id: str, payload: GenerateReportPayload = None):
     if payload is None:
         payload = GenerateReportPayload()
 
-    session = get_session(session_id)
+    session = get_session(session_id, user_id=user_id)
     analyzed_data = session.get("analyzed_data", [])
 
     if not analyzed_data:
@@ -1893,7 +1946,7 @@ def generate_report(session_id: str, payload: GenerateReportPayload = None):
         log.info(f"No LLM available for session {session_id} — generating statistical fallback report")
         report = _generate_fallback_report(session, analyzed_data)
         try:
-            update_session(session_id, {"report": report})
+            update_session(session_id, {"report": report}, user_id=user_id)
             save_snapshot()
         except Exception as e:
             log.warning(f"Could not persist fallback report to session: {e}")
@@ -2021,7 +2074,7 @@ def generate_report(session_id: str, payload: GenerateReportPayload = None):
              f"{len(report['evidence'])} evidence items")
 
     try:
-        update_session(session_id, {"report": report})
+        update_session(session_id, {"report": report}, user_id=user_id)
         save_snapshot()
     except Exception as e:
         log.warning(f"Could not persist LLM report to session: {e}")
@@ -2076,13 +2129,13 @@ class RefineReportPayload(BaseModel):
 
 
 @app.post("/session/{session_id}/refine-report")
-def refine_report(session_id: str, payload: RefineReportPayload):
+def refine_report(session_id: str, payload: RefineReportPayload, user_id: str = Depends(current_user)):
     """Refine an existing report based on user feedback.
 
     Calls the LLM with the current report + feedback to regenerate.
     Falls back gracefully if no LLM key is available.
     """
-    session = get_session(session_id)
+    session = get_session(session_id, user_id=user_id)
     analyzed_data = session.get("analyzed_data", [])
 
     if not analyzed_data:
@@ -2094,7 +2147,7 @@ def refine_report(session_id: str, payload: RefineReportPayload):
     # Generate the current report to use as base for refinement
     current_report = None
     try:
-        current_report = generate_report(session_id, GenerateReportPayload())
+        current_report = generate_report(session_id, GenerateReportPayload(), user_id=user_id)
     except Exception as e:
         log.warning(f"Could not generate base report for refinement: {e}")
         current_report = _generate_fallback_report(session, analyzed_data)
@@ -2111,7 +2164,7 @@ def refine_report(session_id: str, payload: RefineReportPayload):
 
     # Persist the design theme to the session for export
     if payload.design_theme and payload.design_theme != "default":
-        update_session(session_id, {"design_theme": payload.design_theme})
+        update_session(session_id, {"design_theme": payload.design_theme}, user_id=user_id)
 
     log.info(f"Refining report for session {session_id} via {provider_name}: feedback={payload.feedback[:100]}...")
 
@@ -2187,8 +2240,8 @@ def refine_report(session_id: str, payload: RefineReportPayload):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.get("/session/{session_id}/export/html-report")
-async def export_html_report(session_id: str):
-    session = get_session(session_id)
+async def export_html_report(session_id: str, user_id: str = Depends(current_user)):
+    session = get_session(session_id, user_id=user_id)
     analyzed_data = session.get("analyzed_data", [])
     if not analyzed_data:
         raise HTTPException(status_code=400, detail="No analyzed data")
@@ -2359,9 +2412,9 @@ class LearnFromRunPayload(BaseModel):
 
 
 @app.post("/skills/learn-from-run")
-def api_learn_from_run(payload: LearnFromRunPayload):
+def api_learn_from_run(payload: LearnFromRunPayload, user_id: str = Depends(current_user)):
     """After a successful run, extract configuration and save as a reusable skill."""
-    session = get_session(payload.session_id)
+    session = get_session(payload.session_id, user_id=user_id)
 
     run_metadata = {
         "status": session.get("status", ""),
@@ -2612,13 +2665,32 @@ def api_connector_search_to_session(connector_id: str, payload: ConnectorSearchP
 
 
 @app.get("/sessions")
-def api_list_sessions():
+def api_list_sessions(user_id: str = Depends(current_user)):
     """Return lightweight metadata for every known session.
 
     Intentionally omits the heavy fields (raw_data, analyzed_data, report) so
     a dashboard can list hundreds of sessions cheaply. Call /sessions/{sid}/load
     or /session/{sid} when you actually need the rows.
     """
+    # Supabase-backed path: scoped list
+    try:
+        from supabase_client import is_configured as _supa_ok
+    except Exception:
+        _supa_ok = lambda: False  # noqa: E731
+    if _supa_ok():
+        import db as _db
+        rows = _db.list_user_sessions(user_id)
+        items = []
+        for r in rows:
+            items.append({
+                "session_id": r.get("id"),
+                "filename": r.get("filename"),
+                "status": r.get("status", "unknown"),
+                "updated_at": r.get("updated_at"),
+                "agent_id": r.get("agent_id"),
+            })
+        return {"sessions": items, "count": len(items)}
+
     db = load_db()
     items = []
     for sid, s in db.get("sessions", {}).items():
@@ -2643,18 +2715,40 @@ def api_list_sessions():
 
 
 @app.get("/sessions/{session_id}/load")
-def api_load_session(session_id: str):
+def api_load_session(session_id: str, user_id: str = Depends(current_user)):
     """Load a full session payload (raw_data, analyzed_data, report) into the response.
 
     This is the explicit 'restore into the UI' endpoint — mirrors GET /session/{sid}
     but signals intent (and is the natural complement to DELETE /sessions/{sid}).
     """
-    return get_session(session_id)
+    return get_session(session_id, user_id=user_id)
 
 
 @app.delete("/sessions/{session_id}")
-def api_delete_session(session_id: str):
+def api_delete_session(session_id: str, user_id: str = Depends(current_user)):
     """Purge a session from the DB. Also removes any run files this session owns."""
+    # Supabase-backed path
+    try:
+        from supabase_client import is_configured as _supa_ok
+    except Exception:
+        _supa_ok = lambda: False  # noqa: E731
+    if _supa_ok():
+        import db as _db
+        existing = _db.get_session(session_id, user_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Session not found")
+        removed_run_id = existing.get("run_id")
+        _db.delete_session(session_id, user_id)
+        if removed_run_id:
+            try:
+                run_file = RUNS_DIR / f"{removed_run_id}.json"
+                if run_file.exists():
+                    run_file.unlink()
+            except OSError as e:
+                log.warning(f"Could not delete run file for {removed_run_id}: {e}")
+        log.info(f"Session deleted: {session_id} (run_id={removed_run_id}) user={user_id}")
+        return {"ok": True, "deleted": session_id}
+
     db = load_db()
     if session_id not in db.get("sessions", {}):
         raise HTTPException(status_code=404, detail="Session not found")
@@ -2718,10 +2812,7 @@ def api_load_demo(demo_id: str):
     if session_payload is None:
         raise HTTPException(status_code=500, detail="Failed to build demo session")
 
-    db = load_db()
-    db.setdefault("sessions", {})
-    db["sessions"][new_session_id] = session_payload
-    save_db(db)
+    update_session(new_session_id, session_payload, user_id=user_id)
     save_snapshot()
 
     log.info(f"Demo loaded: {demo_id} -> session={new_session_id}")
